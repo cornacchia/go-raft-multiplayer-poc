@@ -183,9 +183,8 @@ func paintScreen(s screen.Screen, w screen.Window, mapRequest chan bool, mapChan
 					var color = color.RGBA{150 - valueToRemove, 150 - valueToRemove, 150 - valueToRemove, 255}
 					m.SetRGBA(x, y, color)
 				} else {
-					var xOffset = 0.4 * (math.Abs(float64(screenWidth)/2.0 - float64(x))) / (float64(screenWidth) / 2.0)
-					var yOffset = 0.6 * (1.0 - (float64(y)-float64(screenHeight)/2.0)/(float64(screenHeight/2.0)))
-					var valueToRemove = (yOffset + xOffset) * 15
+					var yOffset = 1.2 - (float64(y)-float64(screenHeight)/2.0)/(float64(screenHeight/2.0))
+					var valueToRemove = math.Min(yOffset*15, 15)
 					var color = color.RGBA{150 - uint8(valueToRemove*10), 90 - uint8(valueToRemove*6), 15 - uint8(valueToRemove), 255}
 					m.SetRGBA(x, y, color)
 				}

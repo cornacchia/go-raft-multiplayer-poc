@@ -69,7 +69,7 @@ hit_wall(X, Y, Map) ->
   end.
 
 store_message(Players, QueryId, Msg, Map) ->
-  %io:format("Message received: ~p~n", [Message]),
+  %io:format("Message received: ~p ~p~n", [QueryId,Msg]),
   CurrentPlayer = hd(Players),
   if hd(CurrentPlayer) /= QueryId -> [CurrentPlayer|store_message(tl(Players), QueryId, Msg, Map)];
   true ->
