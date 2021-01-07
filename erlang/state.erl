@@ -1,25 +1,22 @@
 -module(state).
 
--export([state_start/2, state_proc_loop/2, state_udp/2]).
+-export([state_start/2, state_proc_loop/1, state_udp/2]).
 
 state_start(State, StatePort) ->
   io:format("State module running with PID: ~p~n", [self()]),
-  StatePid = spawn(?MODULE, state_proc_loop, [State, erlang:monotonic_time(millisecond)]),
+  StatePid = spawn(?MODULE, state_proc_loop, [State]),
   spawn(?MODULE, state_udp, [StatePid, StatePort]),
   StatePid.
 
-state_proc_loop (State, LastTs) ->
+state_proc_loop (State) ->
   receive
     {get, Pid} ->
-     NewTs = erlang:monotonic_time(millisecond),
       Pid ! {state, State},
-      state_proc_loop(State, NewTs) ;
+      state_proc_loop(State) ;
     {store, Message} ->
-      NewTs = erlang:monotonic_time(millisecond),
-      Delta = float(NewTs) - float(LastTs),
       [Players, Map] = State,
       NewPlayers = store_message(Players, Message, Map),
-      state_proc_loop([NewPlayers, Map], NewTs)
+      state_proc_loop([NewPlayers, Map])
   end.
 
 state_udp (StatePid, StatePort) ->
@@ -64,7 +61,6 @@ hit_wall(X, Y, Map) ->
   XRow = lists:nth(floor(X + 1), Map),
   CellCode = lists:nth(floor(Y + 1), XRow),
   if CellCode =:= 35 ->
-    io:format("Hit wall\n"),
     true;
   true -> false
   end.
