@@ -17,18 +17,16 @@ import (
 	"golang.org/x/mobile/event/lifecycle"
 )
 
-var (
-	black    = color.RGBA{0x00, 0x00, 0x00, 0xff}
-	blue0    = color.RGBA{0x00, 0x00, 0x1f, 0xff}
-	blue1    = color.RGBA{0x00, 0x00, 0x3f, 0xff}
-	darkGray = color.RGBA{0x3f, 0x3f, 0x3f, 0xff}
-	green    = color.RGBA{0x00, 0x7f, 0x00, 0x7f}
-	red      = color.RGBA{0x7f, 0x00, 0x00, 0x7f}
-	yellow   = color.RGBA{0x3f, 0x3f, 0x00, 0x3f}
-)
-
 const cmdPort = "6666"
 const statePort = "6667"
+
+// Player data type
+type Player struct {
+	id string
+	x  float64
+	y  float64
+	a  float64
+}
 
 func checkError(err error) {
 	if err != nil {
@@ -51,19 +49,24 @@ func generateMap(messages []string) [][]byte {
 	return mapData
 }
 
-func parsePlayer(messages []string) []float64 {
-	player := []float64{0.0, 0.0, 0.0}
+func parsePlayer(messages []string) Player {
+	var x float64
+	var y float64
+	var a float64
+	var id string
 	var stringParts = strings.Split(messages[1], "|")
-	for i := 0; i < 3; i++ {
-		player[i], _ = strconv.ParseFloat(stringParts[i], 32)
-	}
-	return player
+	id = stringParts[0]
+	x, _ = strconv.ParseFloat(stringParts[1], 32)
+	y, _ = strconv.ParseFloat(stringParts[2], 32)
+	a, _ = strconv.ParseFloat(stringParts[3], 32)
+	return Player{id, x, y, a}
 }
 
-func getState(conn *net.UDPConn, mapRequest chan bool, mapChan chan [][]byte, playerRequest chan bool, playerChan chan []float64, chanGotMap chan bool) {
+func getState(conn *net.UDPConn, mapRequest chan bool, mapChan chan [][]byte, playerRequest chan bool, playerChan chan Player, chanGotMap chan bool, chanGotPlayer chan bool) {
 	var gotMap = false
+	var gotPlayer = false
 	var mapData [][]byte
-	player := []float64{0.0, 0.0, 0.0}
+	var player Player
 	for {
 		select {
 		case <-mapRequest:
@@ -102,6 +105,11 @@ func getState(conn *net.UDPConn, mapRequest chan bool, mapChan chan [][]byte, pl
 					}
 				}
 				player = parsePlayer(messages)
+				if !gotPlayer {
+					gotPlayer = true
+					chanGotPlayer <- true
+				}
+
 			}
 		}
 	}
@@ -124,7 +132,7 @@ func setupUDPConnection(port string) *net.UDPConn {
 	return conn
 }
 
-func paintScreen(s screen.Screen, w screen.Window, mapRequest chan bool, mapChan chan [][]byte, playerRequest chan bool, playerChan chan []float64) {
+func paintScreen(s screen.Screen, w screen.Window, mapRequest chan bool, mapChan chan [][]byte, playerRequest chan bool, playerChan chan Player) {
 	var screenWidth = 640
 	var screenHeight = 480
 	var mapWidth = 16
@@ -141,7 +149,7 @@ func paintScreen(s screen.Screen, w screen.Window, mapRequest chan bool, mapChan
 		playerRequest <- true
 		playerData := <-playerChan
 		for x := 0; x < screenWidth; x++ {
-			var rayAngle = (playerData[2] - fov/2.0) + (float64(x)/float64(screenWidth))*fov
+			var rayAngle = (playerData.a - fov/2.0) + (float64(x)/float64(screenWidth))*fov
 			var distanceToWall = 0.0
 
 			var hitWall = false
@@ -152,8 +160,8 @@ func paintScreen(s screen.Screen, w screen.Window, mapRequest chan bool, mapChan
 			for !hitWall && distanceToWall < maxDepth {
 				distanceToWall += 0.1
 
-				var testX = int(playerData[0] + eyeX*distanceToWall)
-				var testY = int(playerData[1] + eyeY*distanceToWall)
+				var testX = int(playerData.x + eyeX*distanceToWall)
+				var testY = int(playerData.y + eyeY*distanceToWall)
 
 				// Test ray out of bounds
 				if testX < 0 || testX > mapWidth || testY < 0 || testY > mapHeight {
@@ -169,7 +177,7 @@ func paintScreen(s screen.Screen, w screen.Window, mapRequest chan bool, mapChan
 			var floor = float64(screenHeight) - ceiling
 
 			for y := 0; y < screenHeight; y++ {
-				m.SetRGBA(x, y, black)
+				m.SetRGBA(x, y, color.RGBA{0, 0, 0, 255})
 				if float64(y) < ceiling {
 				} else if float64(y) > ceiling && float64(y) <= floor {
 					var valueToRemove = uint8((150 * distanceToWall) / maxDepth)
@@ -200,10 +208,11 @@ func main() {
 	defer stateConn.Close()
 	mapChan := make(chan [][]byte)
 	mapRequest := make(chan bool)
-	playerChan := make(chan []float64)
+	playerChan := make(chan Player)
 	playerRequest := make(chan bool)
 	gotMap := make(chan bool)
-	go getState(stateConn, mapRequest, mapChan, playerRequest, playerChan, gotMap)
+	gotPlayer := make(chan bool)
+	go getState(stateConn, mapRequest, mapChan, playerRequest, playerChan, gotMap, gotPlayer)
 
 	driver.Main(func(s screen.Screen) {
 		w, err := s.NewWindow(&screen.NewWindowOptions{
@@ -214,6 +223,7 @@ func main() {
 		}
 		defer w.Release()
 		<-gotMap
+		<-gotPlayer
 		go paintScreen(s, w, mapRequest, mapChan, playerRequest, playerChan)
 		for {
 			e := w.NextEvent()
@@ -238,11 +248,11 @@ func main() {
 				} else if e.Code == key.CodeW && e.Direction == key.DirPress {
 					go sendCmd(cmdConn, 0)
 				} else if e.Code == key.CodeA && e.Direction == key.DirPress {
-					go sendCmd(cmdConn, 1)
+					go sendCmd(cmdConn, 3)
 				} else if e.Code == key.CodeS && e.Direction == key.DirPress {
 					go sendCmd(cmdConn, 2)
 				} else if e.Code == key.CodeD && e.Direction == key.DirPress {
-					go sendCmd(cmdConn, 3)
+					go sendCmd(cmdConn, 1)
 				}
 			case error:
 				log.Print(e)

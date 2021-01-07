@@ -10,7 +10,7 @@ start () ->
 .
 
 get_base_state() ->
-  [[[2.0, 2.0, 0.0]], get_base_map()].
+  [[[self(), 2.0, 2.0, 0.0]], get_base_map()].
 
 get_base_map() ->
 [

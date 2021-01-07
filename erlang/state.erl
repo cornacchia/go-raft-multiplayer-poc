@@ -31,7 +31,7 @@ send_map(Socket, Host, Port, Map) ->
 .
 
 send_player_data(Socket, Host, Port, Data) ->
-  PlayerData = [float_to_list(I) ++ "|" || I <- Data] ++ "\n",
+  PlayerData = pid_to_list(hd(Data)) ++ ["|" ++ float_to_list(I) || I <- tl(Data)] ++ "|\n",
   gen_udp:send(Socket, Host, Port, list_to_binary(PlayerData)).
 
 send_players(Socket, Host, Port, Players) ->
@@ -70,16 +70,16 @@ store_message(Players, Message, Map) ->
   Delta = 0.2,
   Speed = 5,
   ASpeed = 1.5,
-  [PlayerX, PlayerY, PlayerA] = hd(Players),
+  [Id, PlayerX, PlayerY, PlayerA] = hd(Players),
   % Move UP
   if Message =:= "0" ->
     NewX = PlayerX + (math:sin(PlayerA) * Speed * Delta),
     NewY = PlayerY + (math:cos(PlayerA) * Speed * Delta),
     HitWall = hit_wall(NewX, NewY, Map),
     if HitWall ->
-      [[PlayerX, PlayerY, PlayerA] | tl(Players)];
+      [[Id, PlayerX, PlayerY, PlayerA] | tl(Players)];
     true ->
-      [[NewX, NewY, PlayerA] | tl(Players)]
+      [[Id, NewX, NewY, PlayerA] | tl(Players)]
     end;
   % Move DOWN
     Message =:= "2" ->
@@ -87,19 +87,19 @@ store_message(Players, Message, Map) ->
     NewY = PlayerY - (math:cos(PlayerA) * Speed * Delta),
     HitWall = hit_wall(NewX, NewY, Map),
     if HitWall ->
-      [[PlayerX, PlayerY, PlayerA] | tl(Players)];
+      [[Id, PlayerX, PlayerY, PlayerA] | tl(Players)];
     true ->
-      [[NewX, NewY, PlayerA] | tl(Players)]
+      [[Id, NewX, NewY, PlayerA] | tl(Players)]
     end;
   % Rotate RIGHT
     Message =:= "1" ->
-      NewA = PlayerA - (ASpeed * Delta),
-      [[PlayerX, PlayerY, NewA] | tl(Players)];
+      NewA = PlayerA + (ASpeed * Delta),
+      [[Id, PlayerX, PlayerY, NewA] | tl(Players)];
   % Rotate LEFT
     Message =:= "3" ->
-      NewA = PlayerA + (ASpeed * Delta),
-      [[PlayerX, PlayerY, NewA] | tl(Players)];
+      NewA = PlayerA - (ASpeed * Delta),
+      [[Id, PlayerX, PlayerY, NewA] | tl(Players)];
     true ->
       io:format("Unrecognized command ~p~n", [Message]),
-      [[PlayerX, PlayerY, PlayerA] | tl(Players)]
+      [[Id, PlayerX, PlayerY, PlayerA] | tl(Players)]
   end.
