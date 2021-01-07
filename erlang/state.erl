@@ -8,6 +8,8 @@ state_start(State, StatePort) ->
   spawn(?MODULE, state_udp, [StatePid, StatePort]),
   StatePid.
 
+parse_message(Message) -> string:split(Message, "|").
+
 state_proc_loop (State) ->
   receive
     {get, Pid} ->
@@ -15,7 +17,8 @@ state_proc_loop (State) ->
       state_proc_loop(State) ;
     {store, Message} ->
       [Players, Map] = State,
-      NewPlayers = store_message(Players, Message, Map),
+      [Id, Msg] = parse_message(Message),
+      NewPlayers = store_message(Players, Id, Msg, Map),
       state_proc_loop([NewPlayers, Map])
   end.
 
@@ -31,7 +34,7 @@ send_map(Socket, Host, Port, Map) ->
 .
 
 send_player_data(Socket, Host, Port, Data) ->
-  PlayerData = pid_to_list(hd(Data)) ++ ["|" ++ float_to_list(I) || I <- tl(Data)] ++ "|\n",
+  PlayerData = hd(Data) ++ ["|" ++ float_to_list(I) || I <- tl(Data)] ++ "|\n",
   gen_udp:send(Socket, Host, Port, list_to_binary(PlayerData)).
 
 send_players(Socket, Host, Port, Players) ->
@@ -65,41 +68,45 @@ hit_wall(X, Y, Map) ->
   true -> false
   end.
 
-store_message(Players, Message, Map) ->
+store_message(Players, QueryId, Msg, Map) ->
   %io:format("Message received: ~p~n", [Message]),
-  Delta = 0.2,
-  Speed = 5,
-  ASpeed = 1.5,
-  [Id, PlayerX, PlayerY, PlayerA] = hd(Players),
-  % Move UP
-  if Message =:= "0" ->
-    NewX = PlayerX + (math:sin(PlayerA) * Speed * Delta),
-    NewY = PlayerY + (math:cos(PlayerA) * Speed * Delta),
-    HitWall = hit_wall(NewX, NewY, Map),
-    if HitWall ->
-      [[Id, PlayerX, PlayerY, PlayerA] | tl(Players)];
-    true ->
-      [[Id, NewX, NewY, PlayerA] | tl(Players)]
-    end;
-  % Move DOWN
-    Message =:= "2" ->
-    NewX = PlayerX - (math:sin(PlayerA) * Speed * Delta),
-    NewY = PlayerY - (math:cos(PlayerA) * Speed * Delta),
-    HitWall = hit_wall(NewX, NewY, Map),
-    if HitWall ->
-      [[Id, PlayerX, PlayerY, PlayerA] | tl(Players)];
-    true ->
-      [[Id, NewX, NewY, PlayerA] | tl(Players)]
-    end;
-  % Rotate RIGHT
-    Message =:= "1" ->
-      NewA = PlayerA + (ASpeed * Delta),
-      [[Id, PlayerX, PlayerY, NewA] | tl(Players)];
-  % Rotate LEFT
-    Message =:= "3" ->
-      NewA = PlayerA - (ASpeed * Delta),
-      [[Id, PlayerX, PlayerY, NewA] | tl(Players)];
-    true ->
-      io:format("Unrecognized command ~p~n", [Message]),
-      [[Id, PlayerX, PlayerY, PlayerA] | tl(Players)]
+  CurrentPlayer = hd(Players),
+  if hd(CurrentPlayer) /= QueryId -> [CurrentPlayer|store_message(tl(Players), QueryId, Msg, Map)];
+  true ->
+    Delta = 0.2,
+    Speed = 5,
+    ASpeed = 1.5,
+    [Id, PlayerX, PlayerY, PlayerA] = CurrentPlayer,
+    % Move UP
+    if Msg =:= "0" ->
+      NewX = PlayerX + (math:sin(PlayerA) * Speed * Delta),
+      NewY = PlayerY + (math:cos(PlayerA) * Speed * Delta),
+      HitWall = hit_wall(NewX, NewY, Map),
+      if HitWall ->
+        [[Id, PlayerX, PlayerY, PlayerA] | tl(Players)];
+      true ->
+        [[Id, NewX, NewY, PlayerA] | tl(Players)]
+      end;
+    % Move DOWN
+      Msg =:= "2" ->
+      NewX = PlayerX - (math:sin(PlayerA) * Speed * Delta),
+      NewY = PlayerY - (math:cos(PlayerA) * Speed * Delta),
+      HitWall = hit_wall(NewX, NewY, Map),
+      if HitWall ->
+        [[Id, PlayerX, PlayerY, PlayerA] | tl(Players)];
+      true ->
+        [[Id, NewX, NewY, PlayerA] | tl(Players)]
+      end;
+    % Rotate RIGHT
+      Msg =:= "1" ->
+        NewA = PlayerA + (ASpeed * Delta),
+        [[Id, PlayerX, PlayerY, NewA] | tl(Players)];
+    % Rotate LEFT
+      Msg =:= "3" ->
+        NewA = PlayerA - (ASpeed * Delta),
+        [[Id, PlayerX, PlayerY, NewA] | tl(Players)];
+      true ->
+        io:format("Unrecognized command ~p~n", [Msg]),
+        [[Id, PlayerX, PlayerY, PlayerA] | tl(Players)]
+    end
   end.

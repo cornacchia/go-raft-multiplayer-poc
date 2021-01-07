@@ -62,7 +62,7 @@ func parsePlayer(messages []string) Player {
 	return Player{id, x, y, a}
 }
 
-func getState(conn *net.UDPConn, mapRequest chan bool, mapChan chan [][]byte, playerRequest chan bool, playerChan chan Player, chanGotMap chan bool, chanGotPlayer chan bool) {
+func getState(conn *net.UDPConn, mapRequest chan bool, mapChan chan [][]byte, playerRequest chan bool, playerChan chan Player, chanGotMap chan bool, chanGotPlayer chan string) {
 	var gotMap = false
 	var gotPlayer = false
 	var mapData [][]byte
@@ -107,16 +107,15 @@ func getState(conn *net.UDPConn, mapRequest chan bool, mapChan chan [][]byte, pl
 				player = parsePlayer(messages)
 				if !gotPlayer {
 					gotPlayer = true
-					chanGotPlayer <- true
+					chanGotPlayer <- player.id
 				}
-
 			}
 		}
 	}
 }
 
-func sendCmd(conn *net.UDPConn, cmd int) {
-	msg := strconv.Itoa(cmd)
+func sendCmd(conn *net.UDPConn, playerID string, cmd int) {
+	msg := playerID + "|" + strconv.Itoa(cmd)
 	buf := []byte(msg)
 	_, err := conn.Write(buf)
 	checkError(err)
@@ -211,7 +210,7 @@ func main() {
 	playerChan := make(chan Player)
 	playerRequest := make(chan bool)
 	gotMap := make(chan bool)
-	gotPlayer := make(chan bool)
+	gotPlayer := make(chan string)
 	go getState(stateConn, mapRequest, mapChan, playerRequest, playerChan, gotMap, gotPlayer)
 
 	driver.Main(func(s screen.Screen) {
@@ -223,7 +222,7 @@ func main() {
 		}
 		defer w.Release()
 		<-gotMap
-		<-gotPlayer
+		playerID := <-gotPlayer
 		go paintScreen(s, w, mapRequest, mapChan, playerRequest, playerChan)
 		for {
 			e := w.NextEvent()
@@ -246,13 +245,13 @@ func main() {
 				if e.Code == key.CodeEscape {
 					return
 				} else if e.Code == key.CodeW && e.Direction == key.DirPress {
-					go sendCmd(cmdConn, 0)
+					go sendCmd(cmdConn, playerID, 0)
 				} else if e.Code == key.CodeA && e.Direction == key.DirPress {
-					go sendCmd(cmdConn, 3)
+					go sendCmd(cmdConn, playerID, 3)
 				} else if e.Code == key.CodeS && e.Direction == key.DirPress {
-					go sendCmd(cmdConn, 2)
+					go sendCmd(cmdConn, playerID, 2)
 				} else if e.Code == key.CodeD && e.Direction == key.DirPress {
-					go sendCmd(cmdConn, 1)
+					go sendCmd(cmdConn, playerID, 1)
 				}
 			case error:
 				log.Print(e)

@@ -25,11 +25,7 @@ ui_cmd_loop(Socket, NodePid) ->
   inet:setopts(Socket, [{active, once}]),
   receive
     {udp, Socket, Host, Port, Bin} ->
-      %%Convert incoming binary message to a string
       Message = binary_to_list(Bin),
-      %io:format("Cmd UDP received: "),
-      %io:format(Message),
-      %io:format("\n"),
       gen_udp:send(Socket, Host, Port, <<"OK">>),
       NodePid ! {command, Message},
       ui_cmd_loop(Socket, NodePid)
