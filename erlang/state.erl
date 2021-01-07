@@ -17,9 +17,8 @@ state_proc_loop (State, LastTs) ->
     {store, Message} ->
       NewTs = erlang:monotonic_time(millisecond),
       Delta = float(NewTs) - float(LastTs),
-      %io:format("State loop STORE\n"),
       [Players, Map] = State,
-      NewPlayers = store_message(Players, Message, Delta),
+      NewPlayers = store_message(Players, Message, Map),
       state_proc_loop([NewPlayers, Map], NewTs)
   end.
 
@@ -61,8 +60,17 @@ ui_state_loop(Socket, StatePid) ->
       ui_state_loop(Socket, StatePid)
   end.
 
-store_message(Players, Message, Delta1) ->
-  io:format("Message received: ~p~p~n", [Message, Delta1]),
+hit_wall(X, Y, Map) ->
+  XRow = lists:nth(floor(X + 1), Map),
+  CellCode = lists:nth(floor(Y + 1), XRow),
+  if CellCode =:= 35 ->
+    io:format("Hit wall\n"),
+    true;
+  true -> false
+  end.
+
+store_message(Players, Message, Map) ->
+  %io:format("Message received: ~p~n", [Message]),
   Delta = 0.2,
   Speed = 5,
   ASpeed = 1.5,
@@ -71,12 +79,22 @@ store_message(Players, Message, Delta1) ->
   if Message =:= "0" ->
     NewX = PlayerX + (math:sin(PlayerA) * Speed * Delta),
     NewY = PlayerY + (math:cos(PlayerA) * Speed * Delta),
-    [[NewX, NewY, PlayerA] | tl(Players)];
+    HitWall = hit_wall(NewX, NewY, Map),
+    if HitWall ->
+      [[PlayerX, PlayerY, PlayerA] | tl(Players)];
+    true ->
+      [[NewX, NewY, PlayerA] | tl(Players)]
+    end;
   % Move DOWN
     Message =:= "2" ->
     NewX = PlayerX - (math:sin(PlayerA) * Speed * Delta),
     NewY = PlayerY - (math:cos(PlayerA) * Speed * Delta),
-    [[NewX, NewY, PlayerA] | tl(Players)];
+    HitWall = hit_wall(NewX, NewY, Map),
+    if HitWall ->
+      [[PlayerX, PlayerY, PlayerA] | tl(Players)];
+    true ->
+      [[NewX, NewY, PlayerA] | tl(Players)]
+    end;
   % Rotate RIGHT
     Message =:= "1" ->
       NewA = PlayerA - (ASpeed * Delta),
