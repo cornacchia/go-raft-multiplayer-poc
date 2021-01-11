@@ -5,7 +5,7 @@ type AppendEntriesArgs struct {
 	LeaderID     ServerID
 	PrevLogIndex int
 	PrevLogTerm  int
-	Entries      []raftLog
+	Entries      []RaftLog
 	LeaderCommit int
 }
 
