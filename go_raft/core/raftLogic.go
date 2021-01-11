@@ -228,6 +228,9 @@ func handleLeader(opt *options) {
 
 func applyLog(log RaftLog) {
 	fmt.Printf("Apply log: %d\n", log.Idx)
+	// TODO: Apply log to state machine, i.e. give command to engine
+	//       This should probably be done via a channel
+	// TODO?: respond to client (maybe not necessary, being this a game)
 }
 
 func checkLogsToApply(opt *options) {
