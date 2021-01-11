@@ -132,6 +132,7 @@ func setupUDPConnection(port string) *net.UDPConn {
 }
 
 func paintScreen(s screen.Screen, w screen.Window, mapRequest chan bool, mapChan chan [][]byte, playerRequest chan bool, playerChan chan Player) {
+	// TODO: get all map info from server
 	var screenWidth = 640
 	var screenHeight = 480
 	var mapWidth = 16
