@@ -253,9 +253,8 @@ func (_state *stateImpl) addNewLog(msg GameLog) {
 }
 
 func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntriesResponse {
-	fmt.Println(">>>>>> handle append entries")
-	// Handle Candidate mode particular conditions
-	if _state.currentState == Candidate {
+	// Handle Candidate and Leader mode particular conditions
+	if _state.currentState != Follower {
 		if (*aea).Term >= _state.currentTerm {
 			// If AppendEntries RPC received from new leader: convert to follower
 			_state.stopElectionTimeout()

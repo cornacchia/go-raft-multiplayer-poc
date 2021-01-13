@@ -161,7 +161,7 @@ func handleCandidate(opt *options) {
 		fmt.Println("## Candidate: receive RequestVoteRPC")
 		// If another candidate asks for a vote the logic doesn't change
 		(*opt).requestVoteResponseChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
-	// Receive a responsed to an issued RequestVoteRPC
+	// Receive a response to an issued RequestVoteRPC
 	case reqVoteResponse := <-(*opt).myRequestVoteResponseChan:
 		var currentVotes = (*opt)._state.updateElection(reqVoteResponse)
 		fmt.Printf("## Candidate: Received response to RequestVoteRPC, current votes: %d \n", currentVotes)
@@ -219,6 +219,9 @@ func handleLeader(opt *options) {
 	// Receive an AppendEntriesRPC
 	case appEntrArgs := <-(*opt).appendEntriesArgsChan:
 		(*opt)._state.handleAppendEntries(appEntrArgs)
+	// Receive a response to a (previously) issued RequestVoteRPC
+	// Do nothing, just flush the channel
+	case <-(*opt).myRequestVoteResponseChan:
 	case <-time.After(time.Millisecond * hearthbeatTimeout):
 		sendAppendEntriesRPCs(opt, (*opt)._state.getAppendEntriesArgs)
 	}
