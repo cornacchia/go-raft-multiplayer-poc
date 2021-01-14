@@ -1,7 +1,8 @@
-package core
+package raft
 
 import (
 	"fmt"
+	"go_raft/engine"
 	"log"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ type raftConnection struct {
 }
 
 type options struct {
+	mode   string
 	_state state
 	// This is used to receive AppendEntriesRPC arguments from other nodes (through the listener)
 	appendEntriesArgsChan chan *AppendEntriesArgs
@@ -29,14 +31,17 @@ type options struct {
 	// This is used to get responses from remote nodes when sending a RequestVoteRPC
 	myRequestVoteResponseChan chan *RequestVoteResponse
 	// This is used to receive messages from clients
-	msgChan     chan GameLog
+	msgChan chan engine.GameLog
+	// This is used to send messages to the game engine
+	actionChan  chan engine.GameLog
 	connections *map[ServerID]*rpc.Client
 }
 
 // Start function for server logic
-func Start(port string, otherServers []ServerID) chan GameLog {
-	msgChan := make(chan GameLog)
+func Start(mode string, port string, otherServers []ServerID, actionChan chan engine.GameLog) chan engine.GameLog {
+	msgChan := make(chan engine.GameLog)
 	var newOptions = &options{
+		mode,
 		newState(port, otherServers),
 		make(chan *AppendEntriesArgs),
 		make(chan *AppendEntriesResponse),
@@ -45,6 +50,7 @@ func Start(port string, otherServers []ServerID) chan GameLog {
 		make(chan *RequestVoteResponse),
 		make(chan *RequestVoteResponse),
 		msgChan,
+		actionChan,
 		nil}
 	var raftListener = initRaftListener(newOptions)
 	startListeningServer(raftListener, port)
@@ -229,17 +235,16 @@ func handleLeader(opt *options) {
 	(*opt)._state.checkCommits()
 }
 
-func applyLog(log RaftLog) {
+func applyLog(opt *options, log RaftLog) {
 	fmt.Printf("Apply log: %d\n", log.Idx)
-	// TODO: Apply log to state machine, i.e. give command to engine
-	//       This should probably be done via a channel
+	(*opt).actionChan <- log.Log
 	// TODO?: respond to client (maybe not necessary, being this a game)
 }
 
 func checkLogsToApply(opt *options) {
 	var idxToExec = (*opt)._state.updateLastApplied()
 	if idxToExec > 0 {
-		applyLog((*opt)._state.getLog(idxToExec))
+		applyLog(opt, (*opt)._state.getLog(idxToExec))
 	}
 }
 

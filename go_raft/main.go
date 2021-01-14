@@ -2,25 +2,14 @@ package main
 
 import (
 	"fmt"
-	"go_raft/core"
+	"go_raft/engine"
+	"go_raft/raft"
+	"go_raft/ui"
 	"math/rand"
 	"os"
+	"strconv"
 	"time"
 )
-
-func debugMsgs(msgChan chan core.GameLog) {
-	for {
-		var newLog = core.GameLog{1, 1}
-		msgChan <- newLog
-		time.Sleep(1 * time.Second)
-	}
-}
-
-func prodMode() {
-	for {
-		time.Sleep(1 * time.Second)
-	}
-}
 
 /* TODO:
 Two modes of initialization:
@@ -48,8 +37,17 @@ If the leader is not part of the next configuration:
 // Setup UDP server to get commands from UI
 // Setup a channel to get
 
+func checkError(err error) {
+	if err != nil {
+		fmt.Println("Error: ", err)
+	}
+}
+
 func main() {
+	// Seed random number generator
 	rand.Seed(time.Now().UnixNano())
+
+	// Command line arguments
 	args := os.Args
 	if len(args) < 3 {
 		fmt.Println("No port provided!")
@@ -57,15 +55,40 @@ func main() {
 	}
 	mode := args[1]
 	port := args[2]
-	otherServers := make([]core.ServerID, 0)
+
+	intPort, err := strconv.Atoi(port)
+	checkError(err)
+	var playerID = engine.PlayerID(intPort)
+
+	// Get other servers
+	otherServers := make([]raft.ServerID, 0)
 	for i := 3; i < len(args); i++ {
-		otherServers = append(otherServers, core.ServerID(args[i]))
+		otherServers = append(otherServers, raft.ServerID(args[i]))
 	}
-	// TODO: msgChan should be handled by UDP server
-	msgChan := core.Start(port, otherServers)
-	if mode == "debug" {
-		debugMsgs(msgChan)
+
+	if mode == "Client" {
+		// Client mode: UI + Engine + Raft node
+		var stateReqChan, stateChan, actionChan = engine.Start(playerID)
+		ui.Start(playerID, stateReqChan, stateChan, otherServers)
+		var msgChan = raft.Start(mode, port, otherServers, actionChan)
+		// Start UDP server to receive messages from UIs and send them to Raft through msgChan
 	} else {
-		prodMode()
+		raft.Start(port, otherServers)
 	}
+
+	/* TODO:
+	if mode === Client
+	start engine ->
+		get a channel for communications node -> engine
+		get a channel for communications ui <-> engine
+	start raft node ->
+		get a channel to communicate messages
+	start ui ->
+		the ui handles a udp client to send commands to the leader
+	start udp server ->
+		communicate received commands to the node through the channel
+	so in order start: engine, raft node, udp server, ui
+	*/
+	// TODO: msgChan should be handled by UDP server
+
 }

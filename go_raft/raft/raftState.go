@@ -1,7 +1,8 @@
-package core
+package raft
 
 import (
 	"fmt"
+	"go_raft/engine"
 	"math"
 	"math/rand"
 	"time"
@@ -23,19 +24,19 @@ const (
 )
 
 // PlayerID is the identification code for a player of the game (i.e. a UI instance)
-type PlayerID int
+//type PlayerID int
 
 // GameLog implements the structure of raft messages
-type GameLog struct {
-	Action int
-	Id     PlayerID
-}
+//type GameLog struct {
+//	Action int
+//	Id     PlayerID
+//}
 
 // RaftLog are logs exchanged by the server instances and applied to the game engine (i.e. the state machine)
 type RaftLog struct {
 	Idx  int
 	Term int
-	Log  GameLog
+	Log  engine.GameLog
 }
 
 // ServerID is the identification code for a raft server
@@ -80,7 +81,7 @@ func newState(id string, otherStates []ServerID) *stateImpl {
 		lastSentLogIndex,
 		0,
 		"",
-		[]RaftLog{{0, 0, GameLog{-1, -1}}},
+		[]RaftLog{{0, 0, engine.GameLog{-1, -1}}},
 		Follower,
 		0,
 		0,
@@ -102,7 +103,7 @@ type state interface {
 	getAppendEntriesArgs(ServerID) *AppendEntriesArgs
 	prepareHearthBeat(ServerID) *AppendEntriesArgs
 	handleAppendEntriesResponse(*AppendEntriesResponse)
-	addNewLog(GameLog)
+	addNewLog(engine.GameLog)
 	handleAppendEntries(*AppendEntriesArgs) *AppendEntriesResponse
 	updateLastApplied() int
 	getLog(int) RaftLog
@@ -246,7 +247,7 @@ func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
 	return _state.prepareAppendEntriesArgs(lastLogIdx, lastLogTerm, logsToSend)
 }
 
-func (_state *stateImpl) addNewLog(msg GameLog) {
+func (_state *stateImpl) addNewLog(msg engine.GameLog) {
 	var lastLog = _state.logs[len(_state.logs)-1]
 	var newLog = RaftLog{lastLog.Idx + 1, _state.currentTerm, msg}
 	_state.logs = append(_state.logs, newLog)
