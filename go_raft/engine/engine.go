@@ -1,5 +1,7 @@
 package engine
 
+import "math"
+
 type PlayerID int
 
 type Position struct {
@@ -46,14 +48,51 @@ var GameMap = [16]string{
 	"#..............#",
 	"################"}
 
+const playerSpeed = 5
+const playerAngularSpeed = 1.5
+const delta = 0.2
+
 func (playerState *PlayerState) GetPosition() (float64, float64, float64) {
 	return playerState.pos.x, playerState.pos.y, playerState.pos.a
+}
+
+func checkHitWall(position Position) bool {
+	return GameMap[int(math.Floor(position.x+1))][int(math.Floor(position.y+1))] == '#'
 }
 
 // This function modifies the state of the game
 // it will modify the state for performance
 func applyAction(state *GameState, action GameLog) {
-	// do something
+	var playerData = state.Players[action.Id]
+	var position = playerData.pos
+	switch action.Action {
+	case 0:
+		// Move UP
+		newX := position.x + (math.Sin(position.a) * playerSpeed * delta)
+		newY := position.y + (math.Cos(position.a) * playerSpeed * delta)
+		hitWall := checkHitWall(position)
+		if !hitWall {
+			position.x = newX
+			position.y = newY
+		}
+	case 2:
+		// Move DOWN
+		newX := position.x - (math.Sin(position.a) * playerSpeed * delta)
+		newY := position.y - (math.Cos(position.a) * playerSpeed * delta)
+		hitWall := checkHitWall(position)
+		if !hitWall {
+			position.x = newX
+			position.y = newY
+		}
+	case 1:
+		// Rotate RIGHT
+		newA := position.a + (playerAngularSpeed * delta)
+		position.a = newA
+	case 3:
+		// Rotate LEFT
+		newA := position.a - (playerAngularSpeed * delta)
+		position.a = newA
+	}
 }
 
 func run(playerID PlayerID, requestState chan bool, stateChan chan GameState, actionChan chan GameLog) {
