@@ -88,6 +88,14 @@ func addSelfConnection(port string, connections *map[raft.ServerID]*rpc.Client) 
 	(*connections)[raft.ServerID(port)] = client
 }
 
+func createConnections(conn *map[raft.ServerID]*rpc.Client) *map[raft.ServerID]*rpc.Client {
+	newConnections := make(map[raft.ServerID]*rpc.Client)
+	for k, v := range *conn {
+		newConnections[k] = v
+	}
+	return &newConnections
+}
+
 func main() {
 	// Seed random number generator
 	rand.Seed(time.Now().UnixNano())
@@ -116,7 +124,8 @@ func main() {
 		var uiActionChan = make(chan engine.GameLog)
 		var stateReqChan, stateChan, actionChan = engine.Start(playerID)
 		ui.Start(playerID, stateReqChan, stateChan, uiActionChan)
-		var nodeConnections = raft.Start(mode, port, otherServers, actionChan)
+		var conn = raft.Start(mode, port, otherServers, actionChan)
+		var nodeConnections = createConnections(conn)
 		addSelfConnection(port, nodeConnections)
 		manageActions(uiActionChan, nodeConnections)
 	} else {
