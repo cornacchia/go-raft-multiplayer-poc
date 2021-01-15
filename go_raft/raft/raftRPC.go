@@ -1,5 +1,9 @@
 package raft
 
+import (
+	"go_raft/engine"
+)
+
 type AppendEntriesArgs struct {
 	Term         int
 	LeaderID     ServerID
@@ -27,11 +31,23 @@ type RequestVoteResponse struct {
 	VoteGranted bool
 }
 
+type ActionArgs struct {
+	Id     engine.PlayerID
+	Action int
+}
+
+type ActionResponse struct {
+	Applied  bool
+	LeaderID ServerID
+}
+
 type RaftListener struct {
 	AppendEntriesArgsChan     chan *AppendEntriesArgs
 	AppendEntriesResponseChan chan *AppendEntriesResponse
 	RequestVoteArgsChan       chan *RequestVoteArgs
 	RequestVoteResponseChan   chan *RequestVoteResponse
+	MessageChan               chan engine.GameLog
+	MessageResponseChan       chan *ActionResponse
 }
 
 func initRaftListener(lstOptions *options) *RaftListener {
@@ -39,7 +55,9 @@ func initRaftListener(lstOptions *options) *RaftListener {
 		(*lstOptions).appendEntriesArgsChan,
 		(*lstOptions).appendEntriesResponseChan,
 		(*lstOptions).requestVoteArgsChan,
-		(*lstOptions).requestVoteResponseChan}
+		(*lstOptions).requestVoteResponseChan,
+		(*lstOptions).msgChan,
+		(*lstOptions).msgResponseChan}
 }
 
 func (listener *RaftListener) AppendEntriesRPC(args *AppendEntriesArgs, reply *AppendEntriesResponse) error {
@@ -58,5 +76,13 @@ func (listener *RaftListener) RequestVoteRPC(args *RequestVoteArgs, reply *Reque
 	reply.Term = repl.Term
 	reply.VoteGranted = repl.VoteGranted
 
+	return nil
+}
+
+func (listener *RaftListener) ActionRPC(args *ActionArgs, reply *ActionResponse) error {
+	listener.MessageChan <- engine.GameLog{(*args).Id, (*args).Action}
+	repl := <-listener.MessageResponseChan
+	reply.Applied = repl.Applied
+	reply.LeaderID = repl.LeaderID
 	return nil
 }

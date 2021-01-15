@@ -6,10 +6,13 @@ import (
 	"go_raft/raft"
 	"go_raft/ui"
 	"math/rand"
+	"net/rpc"
 	"os"
 	"strconv"
 	"time"
 )
+
+const actionCallTimeout = 500
 
 /* TODO:
 Two modes of initialization:
@@ -43,6 +46,48 @@ func checkError(err error) {
 	}
 }
 
+// Returns an arbitrary connection id from the map
+func getOneConnectionID(connections *map[raft.ServerID]*rpc.Client) raft.ServerID {
+	for id := range *connections {
+		return id
+	}
+	return ""
+}
+
+func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConnectionChan chan raft.ServerID) {
+	select {
+	case <-call.Done:
+		if !(*response).Applied {
+			newConnectionChan <- (*response).LeaderID
+		}
+	case <-time.After(time.Millisecond * actionCallTimeout):
+		fmt.Println("ActionRPC: Did not receive response from node")
+		// TODO: handle error
+	}
+}
+
+func manageActions(actionChan chan engine.GameLog, connections *map[raft.ServerID]*rpc.Client) {
+	var currentConnection = getOneConnectionID(connections)
+	newConnectionID := make(chan raft.ServerID)
+	for {
+		select {
+		case msg := <-actionChan:
+			var actionResponse raft.ActionResponse
+			var actionArgs = raft.ActionArgs{msg.Id, msg.Action}
+			actionCall := (*connections)[currentConnection].Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
+			go handleActionResponse(actionCall, &actionResponse, newConnectionID)
+		case newLeaderID := <-newConnectionID:
+			currentConnection = newLeaderID
+		}
+	}
+}
+
+func addSelfConnection(port string, connections *map[raft.ServerID]*rpc.Client) {
+	client, err := rpc.DialHTTP("tcp", "127.0.0.1:"+string(port))
+	checkError(err)
+	(*connections)[raft.ServerID(port)] = client
+}
+
 func main() {
 	// Seed random number generator
 	rand.Seed(time.Now().UnixNano())
@@ -68,12 +113,19 @@ func main() {
 
 	if mode == "Client" {
 		// Client mode: UI + Engine + Raft node
+		var uiActionChan = make(chan engine.GameLog)
 		var stateReqChan, stateChan, actionChan = engine.Start(playerID)
-		ui.Start(playerID, stateReqChan, stateChan, otherServers)
-		var msgChan = raft.Start(mode, port, otherServers, actionChan)
-		// Start UDP server to receive messages from UIs and send them to Raft through msgChan
+		ui.Start(playerID, stateReqChan, stateChan, uiActionChan)
+		var nodeConnections = raft.Start(mode, port, otherServers, actionChan)
+		addSelfConnection(port, nodeConnections)
+		manageActions(uiActionChan, nodeConnections)
 	} else {
-		raft.Start(port, otherServers)
+		raft.Start(mode, port, otherServers, nil)
+		for {
+			select {
+			case <-time.After(time.Second * 5):
+			}
+		}
 	}
 
 	/* TODO:

@@ -110,6 +110,7 @@ type state interface {
 	updateLastApplied() int
 	getLog(int) RaftLog
 	checkCommits()
+	getCurrentLeader() ServerID
 }
 
 /* To start a new election a server:
@@ -118,7 +119,7 @@ type state interface {
  * 3. Votes for itself
  */
 func (_state *stateImpl) startElection() {
-	fmt.Println("Start new election")
+	fmt.Println(_state.id, " become Candidate")
 	_state.currentTerm++
 	_state.currentState = Candidate
 	_state.votedFor = _state.id
@@ -147,7 +148,7 @@ func (_state *stateImpl) checkElectionTimeout() *time.Timer {
 }
 
 func (_state *stateImpl) stopElectionTimeout() {
-	fmt.Println("Stop election timeout")
+	// fmt.Println("Stop election timeout")
 	// Ensure the election timer is actually stopped and the channel empty
 	if !_state.electionTimer.Stop() {
 		select {
@@ -159,12 +160,28 @@ func (_state *stateImpl) stopElectionTimeout() {
 }
 
 func (_state *stateImpl) handleRequestToVote(rva *RequestVoteArgs) *RequestVoteResponse {
-	fmt.Printf("Handle request to vote %d, %d\n", _state.currentTerm, (*rva).Term)
-	if _state.currentTerm > (*rva).Term {
-		fmt.Println("Handle request to vote: currentTerm greater than request")
-		return &RequestVoteResponse{_state.currentTerm, false}
-	}
+	// fmt.Printf("Handle request to vote %d, %d\n", _state.currentTerm, (*rva).Term)
 	var lastLog = _state.logs[len(_state.logs)-1]
+	if _state.currentTerm > (*rva).Term {
+		return &RequestVoteResponse{_state.currentTerm, false}
+	} else if (*rva).Term == _state.currentTerm && (_state.votedFor == "" || _state.votedFor == (*rva).CandidateID) && (*rva).LastLogTerm >= lastLog.Term && (*rva).LastLogIndex >= lastLog.Idx {
+		fmt.Println(_state.id, " become Follower")
+		_state.stopElectionTimeout()
+		_state.currentState = Follower
+		_state.currentTerm = (*rva).Term
+		_state.votedFor = (*rva).CandidateID
+		_state.currentLeader = (*rva).CandidateID
+		return &RequestVoteResponse{_state.currentTerm, true}
+	} else if (*rva).Term > _state.currentTerm {
+		// Our term is out of date, become follower
+		fmt.Println(_state.id, " become Follower")
+		_state.stopElectionTimeout()
+		_state.currentState = Follower
+		_state.currentTerm = (*rva).Term
+		_state.votedFor = (*rva).CandidateID
+		_state.currentLeader = (*rva).CandidateID
+		return &RequestVoteResponse{_state.currentTerm, true}
+	}
 	/*
 		if _state.currentTerm < (*rva).Term {
 			fmt.Println("Handle request to vote: accept leader with greater term")
@@ -173,15 +190,8 @@ func (_state *stateImpl) handleRequestToVote(rva *RequestVoteArgs) *RequestVoteR
 			_state.currentTerm = (*rva).Term
 			return &RequestVoteResponse{_state.currentTerm, true}
 		}*/
-	if (_state.votedFor == "" || _state.votedFor == (*rva).CandidateID) && (*rva).LastLogTerm >= lastLog.Term && (*rva).LastLogIndex >= lastLog.Idx {
-		fmt.Println("Accepted new leader: other reasons")
-		_state.currentState = Follower
-		_state.currentTerm = (*rva).Term
-		_state.votedFor = (*rva).CandidateID
-		_state.stopElectionTimeout()
-		return &RequestVoteResponse{_state.currentTerm, true}
-	}
-	fmt.Println("Handle request to vote: default false")
+
+	// fmt.Println("Handle request to vote: default false")
 	return &RequestVoteResponse{_state.currentTerm, false}
 }
 
@@ -192,6 +202,7 @@ func (_state *stateImpl) getElectionTimer() *time.Timer {
 func (_state *stateImpl) updateElection(resp *RequestVoteResponse) int {
 	// If the node's current state is stale immediately revert to Follower state
 	if (*resp).Term > (_state.currentTerm) {
+		fmt.Println(_state.id, " become Follower")
 		_state.stopElectionTimeout()
 		_state.currentElectionVotes = 0
 		_state.currentTerm = (*resp).Term
@@ -204,9 +215,11 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse) int {
 }
 
 func (_state *stateImpl) winElection() {
+	fmt.Println(_state.id, " become Leader")
 	var lastLog = _state.logs[len(_state.logs)-1]
 	_state.currentElectionVotes = 0
 	_state.currentState = Leader
+	_state.currentLeader = _state.id
 	for id := range _state.nextIndex {
 		_state.nextIndex[id] = lastLog.Idx + 1
 	}
@@ -260,6 +273,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 	// Handle Candidate and Leader mode particular conditions
 	if _state.currentState != Follower {
 		if (*aea).Term >= _state.currentTerm {
+			fmt.Println(_state.id, " become Follower")
 			// If AppendEntries RPC received from new leader: convert to follower
 			_state.stopElectionTimeout()
 			_state.currentState = Follower
@@ -278,6 +292,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 	// At this point we can say that if the append entries request is empty
 	// then it is an heartbeat an so we can keep _state.currentLeader updated
 	if len((*aea).Entries) == 0 {
+		// fmt.Println("received heartbeat ", (*aea).LeaderID)
 		_state.currentLeader = (*aea).LeaderID
 	}
 	// 3. If an existing entry conflicts with a new one (same index but different terms),
@@ -349,4 +364,8 @@ func (_state *stateImpl) checkCommits() {
 			}
 		}
 	}
+}
+
+func (_state *stateImpl) getCurrentLeader() ServerID {
+	return _state.currentLeader
 }

@@ -3,13 +3,10 @@ package ui
 import (
 	"fmt"
 	"go_raft/engine"
-	"go_raft/raft"
 	"image"
 	"image/color"
 	"log"
 	"math"
-	"net"
-	"strconv"
 
 	"golang.org/x/exp/shiny/driver"
 	"golang.org/x/exp/shiny/screen"
@@ -28,11 +25,10 @@ var maxDepth = float64(mapHeight)
 var screenSize = image.Point{screenWidth, screenHeight}
 
 type uiOptions struct {
-	playerID          engine.PlayerID
-	stateRequestChan  chan bool
-	gameStateChan     chan engine.GameState
-	otherServers      []raft.ServerID
-	currentConnection *net.UDPConn
+	playerID         engine.PlayerID
+	stateRequestChan chan bool
+	gameStateChan    chan engine.GameState
+	actionChan       chan engine.GameLog
 }
 
 func checkError(err error) {
@@ -40,29 +36,6 @@ func checkError(err error) {
 		fmt.Println("Error: ", err)
 	}
 }
-
-func sendCmd(conn *net.UDPConn, playerID engine.PlayerID, cmd int) {
-	msg := string(playerID) + "|" + strconv.Itoa(cmd)
-	buf := []byte(msg)
-	_, err := conn.Write(buf)
-	checkError(err)
-}
-
-func setupUDPConnection(otherServers []raft.ServerID) *net.UDPConn {
-	// take a random server from otherServers
-	// if its the leader it will respond OK
-	// otherwise it will give the addr of the current leader
-	// keep trying until you get the address
-	addr, err := net.ResolveUDPAddr("udp", "127.0.0.1:"+port)
-	checkError(err)
-	localAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
-	checkError(err)
-	conn, err := net.DialUDP("udp", localAddr, addr)
-	checkError(err)
-	// TODO: somewhere conn.Close()
-	return conn
-}
-
 func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window) {
 	for {
 		buff, err := uiScreen.NewBuffer(screenSize)
@@ -159,13 +132,13 @@ func run(opt *uiOptions) {
 				if e.Code == key.CodeEscape {
 					return
 				} else if e.Code == key.CodeW && e.Direction == key.DirPress {
-					go sendCmd((*opt).currentConnection, (*opt).playerID, 0)
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, 0}
 				} else if e.Code == key.CodeA && e.Direction == key.DirPress {
-					go sendCmd((*opt).currentConnection, (*opt).playerID, 3)
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, 3}
 				} else if e.Code == key.CodeS && e.Direction == key.DirPress {
-					go sendCmd((*opt).currentConnection, (*opt).playerID, 2)
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, 2}
 				} else if e.Code == key.CodeD && e.Direction == key.DirPress {
-					go sendCmd((*opt).currentConnection, (*opt).playerID, 1)
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, 1}
 				}
 			case error:
 				log.Print(e)
@@ -174,15 +147,11 @@ func run(opt *uiOptions) {
 	})
 }
 
-func Start(playerID engine.PlayerID, stateRequestChan chan bool, gameStateChan chan engine.GameState, otherServers []raft.ServerID) {
-	var cmdConn = setupUDPConnection(otherServers)
-	defer cmdConn.Close()
-
+func Start(playerID engine.PlayerID, stateRequestChan chan bool, gameStateChan chan engine.GameState, actionChan chan engine.GameLog) {
 	var opt = &uiOptions{
 		playerID,
 		stateRequestChan,
 		gameStateChan,
-		otherServers,
-		cmdConn}
+		actionChan}
 	go run(opt)
 }

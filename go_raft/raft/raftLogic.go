@@ -30,15 +30,17 @@ type options struct {
 	requestVoteResponseChan chan *RequestVoteResponse
 	// This is used to get responses from remote nodes when sending a RequestVoteRPC
 	myRequestVoteResponseChan chan *RequestVoteResponse
-	// This is used to receive messages from clients
+	// This is used to receive messages from clients RPC
 	msgChan chan engine.GameLog
+	// This is used to send responses to actions RPC
+	msgResponseChan chan *ActionResponse
 	// This is used to send messages to the game engine
 	actionChan  chan engine.GameLog
 	connections *map[ServerID]*rpc.Client
 }
 
 // Start function for server logic
-func Start(mode string, port string, otherServers []ServerID, actionChan chan engine.GameLog) chan engine.GameLog {
+func Start(mode string, port string, otherServers []ServerID, actionChan chan engine.GameLog) *map[ServerID]*rpc.Client {
 	msgChan := make(chan engine.GameLog)
 	var newOptions = &options{
 		mode,
@@ -50,13 +52,15 @@ func Start(mode string, port string, otherServers []ServerID, actionChan chan en
 		make(chan *RequestVoteResponse),
 		make(chan *RequestVoteResponse),
 		msgChan,
+		make(chan *ActionResponse),
 		actionChan,
 		nil}
 	var raftListener = initRaftListener(newOptions)
 	startListeningServer(raftListener, port)
-	newOptions.connections = connectToRaftServers(otherServers)
+	nodeConnections := connectToRaftServers(otherServers)
+	newOptions.connections = nodeConnections
 	go run(newOptions)
-	return msgChan
+	return nodeConnections
 }
 
 func connectToRaftServer(serverPort ServerID, result chan *raftConnection) {
@@ -111,7 +115,7 @@ func sendRequestVoteRPCs(connections *map[ServerID]*rpc.Client, requestVoteArgs 
 	const electionTimeout time.Duration = 200
 	for id := range *connections {
 		go func(id ServerID) {
-			fmt.Println("Send requestVoteRPC: " + string(id))
+			// fmt.Println("Send requestVoteRPC: " + string(id))
 			var requestVoteResponse RequestVoteResponse
 			requestVoteCall := (*connections)[id].Go("RaftListener.RequestVoteRPC", requestVoteArgs, &requestVoteResponse, nil)
 			select {
@@ -130,21 +134,25 @@ func sendRequestVoteRPCs(connections *map[ServerID]*rpc.Client, requestVoteArgs 
  * RPCs from a Leader or Candidate.
  */
 func handleFollower(opt *options) {
-	fmt.Println("# Follower: handle turn")
+	// fmt.Println("# Follower: handle turn")
 	var electionTimeoutTimer = (*opt)._state.checkElectionTimeout()
 	select {
+	// Received message from client: respond with correct leader id
+	case <-(*opt).msgChan:
+		// fmt.Println("# Follower: received action")
+		(*opt).msgResponseChan <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
 	// Receive an AppendEntriesRPC
 	case appEntrArgs := <-(*opt).appendEntriesArgsChan:
-		fmt.Println("# Follower: receive AppendEntriesRPC")
+		// fmt.Println("# Follower: receive AppendEntriesRPC")
 		(*opt)._state.stopElectionTimeout()
 		(*opt).appendEntriesResponseChan <- (*opt)._state.handleAppendEntries(appEntrArgs)
 	// Receive a RequestVoteRPC
 	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
-		fmt.Println("# Follower: receive RequestVoteRPC")
+		// fmt.Println("# Follower: receive RequestVoteRPC")
 		(*opt)._state.stopElectionTimeout()
 		(*opt).requestVoteResponseChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
 	case <-(*electionTimeoutTimer).C:
-		fmt.Println("# Follower: election timeout")
+		// fmt.Println("# Follower: election timeout")
 		(*opt)._state.stopElectionTimeout()
 		(*opt)._state.startElection()
 		// Issue requestvoterpc in parallel to other servers
@@ -154,23 +162,27 @@ func handleFollower(opt *options) {
 }
 
 func handleCandidate(opt *options) {
-	fmt.Println("## Candidate: handle current turn")
+	// fmt.Println("## Candidate: handle current turn")
 	var electionTimeoutTimer = (*opt)._state.checkElectionTimeout()
 	select {
+	// Received message from client: respond with correct leader id
+	case <-(*opt).msgChan:
+		// fmt.Println("## Candidate: received action")
+		(*opt).msgResponseChan <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
 	// Receive an AppendEntriesRPC
 	case appEntrArgs := <-(*opt).appendEntriesArgsChan:
-		fmt.Println("## Candidate: receive AppendEntriesRPC")
+		// fmt.Println("## Candidate: receive AppendEntriesRPC")
 		// Election timeout is stopped in handleAppendEntries if necessary
 		(*opt).appendEntriesResponseChan <- (*opt)._state.handleAppendEntries(appEntrArgs)
 	// Receive a RequestVoteRPC
 	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
-		fmt.Println("## Candidate: receive RequestVoteRPC")
+		// fmt.Println("## Candidate: receive RequestVoteRPC")
 		// If another candidate asks for a vote the logic doesn't change
 		(*opt).requestVoteResponseChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
 	// Receive a response to an issued RequestVoteRPC
 	case reqVoteResponse := <-(*opt).myRequestVoteResponseChan:
 		var currentVotes = (*opt)._state.updateElection(reqVoteResponse)
-		fmt.Printf("## Candidate: Received response to RequestVoteRPC, current votes: %d \n", currentVotes)
+		// fmt.Printf("## Candidate: Received response to RequestVoteRPC, current votes: %d \n", currentVotes)
 		// Check if a majority of votes was received
 		if currentVotes > (len(*(*opt).connections)+1)/2 {
 			(*opt)._state.stopElectionTimeout()
@@ -179,7 +191,7 @@ func handleCandidate(opt *options) {
 			sendAppendEntriesRPCs(opt, (*opt)._state.getAppendEntriesArgs)
 		}
 	case <-(*electionTimeoutTimer).C:
-		fmt.Println("## Candidate: Hit election timeout")
+		// fmt.Println("## Candidate: Hit election timeout")
 		(*opt)._state.stopElectionTimeout()
 		// Too much time has passed with no leader or response, start anew
 		(*opt)._state.startElection()
@@ -193,7 +205,7 @@ func sendAppendEntriesRPCs(opt *options, argsFunction func(ServerID) *AppendEntr
 	const appendEntriesTimeout time.Duration = 200
 	for id := range *(*opt).connections {
 		go func(id ServerID) {
-			fmt.Println("Send appendEntriesRPC: " + string(id))
+			// fmt.Println("Send appendEntriesRPC: " + string(id))
 			var appendEntriesResponse AppendEntriesResponse
 			var appendEntriesArgs = argsFunction(id)
 			appendEntriesCall := (*(*opt).connections)[id].Go("RaftListener.AppendEntriesRPC", appendEntriesArgs, &appendEntriesResponse, nil)
@@ -209,18 +221,21 @@ func sendAppendEntriesRPCs(opt *options, argsFunction func(ServerID) *AppendEntr
 }
 
 func handleLeader(opt *options) {
+	// fmt.Println("### Leader: handle turn")
 	const hearthbeatTimeout time.Duration = 20
 	select {
 	// Received message from client
 	case msg := <-(*opt).msgChan:
 		(*opt)._state.addNewLog(msg)
-		// TODO: Respond after entry applied to state machine
 		sendAppendEntriesRPCs(opt, (*opt)._state.getAppendEntriesArgs)
+		// TODO: handle response only when message is committed
+		(*opt).msgResponseChan <- &ActionResponse{true, (*opt)._state.getCurrentLeader()}
 	// Handle responses to AppendEntries
 	case appendEntriesResponse := <-(*opt).myAppendEntriesResponseChan:
 		(*opt)._state.handleAppendEntriesResponse(appendEntriesResponse)
 	// Receive a RequestVoteRPC
 	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
+		fmt.Println("received request to vote leader")
 		(*opt).requestVoteResponseChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
 	// Receive an AppendEntriesRPC
 	case appEntrArgs := <-(*opt).appendEntriesArgsChan:
@@ -236,8 +251,9 @@ func handleLeader(opt *options) {
 }
 
 func applyLog(opt *options, log RaftLog) {
-	fmt.Printf("Apply log: %d\n", log.Idx)
-	(*opt).actionChan <- log.Log
+	if (*opt).mode == "Client" {
+		(*opt).actionChan <- log.Log
+	}
 	// TODO?: respond to client (maybe not necessary, being this a game)
 }
 
