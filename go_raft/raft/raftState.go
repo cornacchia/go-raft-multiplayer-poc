@@ -50,6 +50,7 @@ type stateImpl struct {
 	electionTimer          *time.Timer
 	currentElectionVotes   int
 	lastSentLogIndex       map[ServerID]int
+	currentLeader          ServerID
 	// Persistent state
 	currentTerm int
 	votedFor    ServerID
@@ -79,6 +80,7 @@ func newState(id string, otherStates []ServerID) *stateImpl {
 		nil,
 		0,
 		lastSentLogIndex,
+		"",
 		0,
 		"",
 		[]RaftLog{{0, 0, engine.GameLog{-1, -1}}},
@@ -175,6 +177,7 @@ func (_state *stateImpl) handleRequestToVote(rva *RequestVoteArgs) *RequestVoteR
 		fmt.Println("Accepted new leader: other reasons")
 		_state.currentState = Follower
 		_state.currentTerm = (*rva).Term
+		_state.votedFor = (*rva).CandidateID
 		_state.stopElectionTimeout()
 		return &RequestVoteResponse{_state.currentTerm, true}
 	}
@@ -271,6 +274,11 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
 	if _state.logs[(*aea).PrevLogIndex].Term != (*aea).PrevLogTerm {
 		return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
+	}
+	// At this point we can say that if the append entries request is empty
+	// then it is an heartbeat an so we can keep _state.currentLeader updated
+	if len((*aea).Entries) == 0 {
+		_state.currentLeader = (*aea).LeaderID
 	}
 	// 3. If an existing entry conflicts with a new one (same index but different terms),
 	// delete the existing entry and all that follow it
