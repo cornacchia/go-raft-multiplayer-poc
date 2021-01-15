@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"fmt"
 	"go_raft/engine"
 	"math"
 	"math/rand"
@@ -91,6 +90,8 @@ func newState(id string, otherStates []ServerID) *stateImpl {
 		matchIndex}
 }
 
+// TODO probably lock state before writing to it
+
 // State interface for raft server instances
 type state interface {
 	startElection()
@@ -119,7 +120,7 @@ type state interface {
  * 3. Votes for itself
  */
 func (_state *stateImpl) startElection() {
-	fmt.Println(_state.id, " become Candidate")
+	// fmt.Println(_state.id, " become Candidate")
 	_state.currentTerm++
 	_state.currentState = Candidate
 	_state.votedFor = _state.id
@@ -165,7 +166,7 @@ func (_state *stateImpl) handleRequestToVote(rva *RequestVoteArgs) *RequestVoteR
 	if _state.currentTerm > (*rva).Term {
 		return &RequestVoteResponse{_state.currentTerm, false}
 	} else if (*rva).Term == _state.currentTerm && (_state.votedFor == "" || _state.votedFor == (*rva).CandidateID) && (*rva).LastLogTerm >= lastLog.Term && (*rva).LastLogIndex >= lastLog.Idx {
-		fmt.Println(_state.id, " become Follower")
+		// fmt.Println(_state.id, " become Follower")
 		_state.stopElectionTimeout()
 		_state.currentState = Follower
 		_state.currentTerm = (*rva).Term
@@ -174,7 +175,7 @@ func (_state *stateImpl) handleRequestToVote(rva *RequestVoteArgs) *RequestVoteR
 		return &RequestVoteResponse{_state.currentTerm, true}
 	} else if (*rva).Term > _state.currentTerm {
 		// Our term is out of date, become follower
-		fmt.Println(_state.id, " become Follower")
+		// fmt.Println(_state.id, " become Follower")
 		_state.stopElectionTimeout()
 		_state.currentState = Follower
 		_state.currentTerm = (*rva).Term
@@ -202,7 +203,7 @@ func (_state *stateImpl) getElectionTimer() *time.Timer {
 func (_state *stateImpl) updateElection(resp *RequestVoteResponse) int {
 	// If the node's current state is stale immediately revert to Follower state
 	if (*resp).Term > (_state.currentTerm) {
-		fmt.Println(_state.id, " become Follower")
+		// fmt.Println(_state.id, " become Follower")
 		_state.stopElectionTimeout()
 		_state.currentElectionVotes = 0
 		_state.currentTerm = (*resp).Term
@@ -215,7 +216,7 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse) int {
 }
 
 func (_state *stateImpl) winElection() {
-	fmt.Println(_state.id, " become Leader")
+	// fmt.Println(_state.id, " become Leader")
 	var lastLog = _state.logs[len(_state.logs)-1]
 	_state.currentElectionVotes = 0
 	_state.currentState = Leader
@@ -273,7 +274,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 	// Handle Candidate and Leader mode particular conditions
 	if _state.currentState != Follower {
 		if (*aea).Term >= _state.currentTerm {
-			fmt.Println(_state.id, " become Follower")
+			// fmt.Println(_state.id, " become Follower")
 			// If AppendEntries RPC received from new leader: convert to follower
 			_state.stopElectionTimeout()
 			_state.currentState = Follower

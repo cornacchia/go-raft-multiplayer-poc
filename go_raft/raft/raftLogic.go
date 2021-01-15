@@ -226,24 +226,29 @@ func handleLeader(opt *options) {
 	select {
 	// Received message from client
 	case msg := <-(*opt).msgChan:
+		// fmt.Println("### Leader: receive action message")
 		(*opt)._state.addNewLog(msg)
 		sendAppendEntriesRPCs(opt, (*opt)._state.getAppendEntriesArgs)
 		// TODO: handle response only when message is committed
 		(*opt).msgResponseChan <- &ActionResponse{true, (*opt)._state.getCurrentLeader()}
 	// Handle responses to AppendEntries
 	case appendEntriesResponse := <-(*opt).myAppendEntriesResponseChan:
+		// fmt.Println("### Leader: receive response to append entries rpc")
 		(*opt)._state.handleAppendEntriesResponse(appendEntriesResponse)
 	// Receive a RequestVoteRPC
 	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
-		fmt.Println("received request to vote leader")
+		// fmt.Println("### Leader: receive request vote rpc")
 		(*opt).requestVoteResponseChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
 	// Receive an AppendEntriesRPC
 	case appEntrArgs := <-(*opt).appendEntriesArgsChan:
+		// fmt.Println("### Leader: receive append entries rpc")
 		(*opt)._state.handleAppendEntries(appEntrArgs)
 	// Receive a response to a (previously) issued RequestVoteRPC
 	// Do nothing, just flush the channel
 	case <-(*opt).myRequestVoteResponseChan:
+		// fmt.Println("### Leader: receive votes issued previously")
 	case <-time.After(time.Millisecond * hearthbeatTimeout):
+		// fmt.Println("### Leader: hearthbeat")
 		sendAppendEntriesRPCs(opt, (*opt)._state.getAppendEntriesArgs)
 	}
 	// Check if leader should store new commits
