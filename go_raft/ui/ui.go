@@ -5,6 +5,7 @@ import (
 	"go_raft/engine"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/png"
 	"log"
 	"math"
@@ -13,6 +14,9 @@ import (
 
 	"golang.org/x/exp/shiny/driver"
 	"golang.org/x/exp/shiny/screen"
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/basicfont"
+	"golang.org/x/image/math/fixed"
 	"golang.org/x/mobile/event/key"
 	"golang.org/x/mobile/event/lifecycle"
 )
@@ -75,12 +79,42 @@ func getOrderedPlayers(state *engine.GameState, playerID engine.PlayerID) []engi
 	return positions
 }
 
-func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window) {
+func addLabel(img *image.RGBA, x, y int, label string) {
+	col := color.RGBA{255, 255, 255, 255}
+	point := fixed.Point26_6{fixed.Int26_6(x * 64), fixed.Int26_6(y * 64)}
+
+	d := &font.Drawer{
+		Dst:  img,
+		Src:  image.NewUniform(col),
+		Face: basicfont.Face7x13,
+		Dot:  point,
+	}
+	d.DrawString(label)
+}
+
+func writeStateToScreen(position engine.Position, textMem *image.RGBA, img *image.RGBA) {
+	positionString := "(x: " + fmt.Sprintf("%.2f", position.X) + ", y: " + fmt.Sprintf("%.2f", position.Y) + ", a: " + fmt.Sprintf("%.2f", position.A) + ")"
+	addLabel(img, 0, 15, positionString)
+
+	draw.Draw(textMem, textMem.Bounds(), img, image.ZP, draw.Src)
+}
+
+func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window, killChan chan bool) {
 	depthBuffer := make([]float64, screenWidth)
 	for {
+		select {
+		case <-killChan:
+			return
+		default:
+		}
 		buff, err := uiScreen.NewBuffer(screenSize)
 		checkError(err)
 		mem := buff.RGBA()
+
+		textBuff, err := uiScreen.NewBuffer(screenSize)
+		checkError(err)
+		textMem := textBuff.RGBA()
+		img := image.NewRGBA(image.Rect(0, 0, screenWidth, 200))
 
 		// Get game state
 		(*opt).stateRequestChan <- true
@@ -89,6 +123,8 @@ func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window) {
 		playerData := gameState.Players[(*opt).playerID]
 		playerPosition := playerData.GetPosition()
 		otherPlayersPositions := getOrderedPlayers(&gameState, (*opt).playerID)
+		writeStateToScreen(playerPosition, textMem, img)
+
 		for x := 0; x < screenWidth; x++ {
 			var rayAngle = (playerPosition.A - fov/2.0) + (float64(x)/float64(screenWidth))*fov
 			var distanceToWall = 0.0
@@ -121,7 +157,6 @@ func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window) {
 
 			// Draw walls, floor, ceiling
 			for y := 0; y < screenHeight; y++ {
-				mem.SetRGBA(x, y, color.RGBA{0, 0, 0, 255})
 				if float64(y) < ceiling {
 				} else if float64(y) > ceiling && float64(y) <= floor {
 					var valueToRemove = uint8((150 * distanceToWall) / maxDepth)
@@ -177,24 +212,38 @@ func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window) {
 				}
 			}
 		}
+
 		newTexture, err := uiScreen.NewTexture(screenSize)
 		checkError(err)
 		newTexture.Upload(image.Point{}, buff, buff.Bounds())
+
+		textTexture, err := uiScreen.NewTexture(screenSize)
+		checkError(err)
+		textTexture.Upload(image.Point{}, textBuff, textBuff.Bounds())
+
+		window.Fill(image.Rectangle{image.Point{0, 0}, image.Point{screenWidth, screenHeight + 200}}, color.RGBA{0, 0, 0, 255}, draw.Src)
 		window.Copy(image.Point{}, newTexture, newTexture.Bounds(), screen.Over, nil)
+		window.Copy(image.Point{0, screenHeight + 15}, textTexture, textTexture.Bounds(), screen.Over, nil)
+
 		buff.Release()
 		newTexture.Release()
+		textBuff.Release()
+		textTexture.Release()
 	}
 }
 
 func run(opt *uiOptions) {
 	driver.Main(func(uiScreen screen.Screen) {
 		window, err := uiScreen.NewWindow(&screen.NewWindowOptions{
-			Title: "UI - " + fmt.Sprint((*opt).playerID),
+			Title:  "UI - " + fmt.Sprint((*opt).playerID),
+			Width:  screenWidth,
+			Height: screenHeight + 200,
 		})
 		checkError(err)
 		defer window.Release()
 
-		go paintScreen(opt, uiScreen, window)
+		killChan := make(chan bool)
+		go paintScreen(opt, uiScreen, window, killChan)
 		(*opt).actionChan <- engine.GameLog{(*opt).playerID, 5}
 		for {
 			e := window.NextEvent()
@@ -210,11 +259,13 @@ func run(opt *uiOptions) {
 			switch e := e.(type) {
 			case lifecycle.Event:
 				if e.To == lifecycle.StageDead {
+					killChan <- true
 					return
 				}
 
 			case key.Event:
 				if e.Code == key.CodeEscape {
+					killChan <- true
 					return
 				} else if e.Code == key.CodeW && e.Direction == key.DirPress {
 					(*opt).actionChan <- engine.GameLog{(*opt).playerID, 0}
