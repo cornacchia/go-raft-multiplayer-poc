@@ -67,6 +67,7 @@ func checkHitWall(x float64, y float64) bool {
 
 // TODO probabilmente mandare una azione iniziale di iscrizione
 func applyAction(state *GameState, action GameLog, delta float64) {
+	delta = 0.01
 	playerData := (*state).Players[action.Id]
 	var position = playerData.pos
 	switch action.Action {
