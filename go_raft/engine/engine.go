@@ -9,11 +9,11 @@ type PlayerID int
 
 type Position struct {
 	// Horizontal position on map
-	x float64
+	X float64
 	// Vertical position on map
-	y float64
+	Y float64
 	// Angle of view
-	a float64
+	A float64
 }
 
 type PlayerState struct {
@@ -21,7 +21,7 @@ type PlayerState struct {
 }
 
 type Player interface {
-	GetPosition() (float64, float64, float64)
+	GetPosition() Position
 }
 
 type GameState struct {
@@ -54,8 +54,8 @@ var GameMap = [16]string{
 const playerSpeed = 10
 const playerAngularSpeed = 5
 
-func (playerState *PlayerState) GetPosition() (float64, float64, float64) {
-	return playerState.pos.x, playerState.pos.y, playerState.pos.a
+func (playerState *PlayerState) GetPosition() Position {
+	return playerState.pos
 }
 
 func checkHitWall(x float64, y float64) bool {
@@ -64,43 +64,53 @@ func checkHitWall(x float64, y float64) bool {
 
 // This function modifies the state of the game
 // it will modify the state for performance
+
+// TODO probabilmente mandare una azione iniziale di iscrizione
 func applyAction(state *GameState, action GameLog, delta float64) {
-	var playerData = (*state).Players[action.Id]
+	playerData := (*state).Players[action.Id]
 	var position = playerData.pos
 	switch action.Action {
 	case 0:
 		// Move FORWARD
-		newX := position.x + (math.Sin(position.a) * playerSpeed * delta)
-		newY := position.y + (math.Cos(position.a) * playerSpeed * delta)
+		newX := position.X + (math.Sin(position.A) * playerSpeed * delta)
+		newY := position.Y + (math.Cos(position.A) * playerSpeed * delta)
 		hitWall := checkHitWall(newX, newY)
 		if !hitWall {
-			position.x = newX
-			position.y = newY
+			position.X = newX
+			position.Y = newY
 		}
+		(*state).Players[action.Id] = PlayerState{position}
 	case 2:
 		// Move BACKWARD
-		newX := position.x - (math.Sin(position.a) * playerSpeed * delta)
-		newY := position.y - (math.Cos(position.a) * playerSpeed * delta)
+		newX := position.X - (math.Sin(position.A) * playerSpeed * delta)
+		newY := position.Y - (math.Cos(position.A) * playerSpeed * delta)
 		hitWall := checkHitWall(newX, newY)
 		if !hitWall {
-			position.x = newX
-			position.y = newY
+			position.X = newX
+			position.Y = newY
 		}
+		(*state).Players[action.Id] = PlayerState{position}
 	case 1:
 		// Rotate RIGHT
-		newA := position.a + (playerAngularSpeed * delta)
-		position.a = newA
+		newA := position.A + (playerAngularSpeed * delta)
+		position.A = newA
+		(*state).Players[action.Id] = PlayerState{position}
 	case 3:
 		// Rotate LEFT
-		newA := position.a - (playerAngularSpeed * delta)
-		position.a = newA
+		newA := position.A - (playerAngularSpeed * delta)
+		position.A = newA
+		(*state).Players[action.Id] = PlayerState{position}
+	case 5:
+		// Register new player
+		(*state).Players[action.Id] = PlayerState{Position{2.0, 2.0, 0.0}}
 	}
-	(*state).Players[action.Id] = PlayerState{position}
+
 }
 
-func run(playerID PlayerID, requestState chan bool, stateChan chan GameState, actionChan chan GameLog, start int64) {
+func run(playerID PlayerID, requestState chan bool, stateChan chan GameState, actionChan chan GameLog) {
 	var gameState = GameState{make(map[PlayerID]PlayerState)}
-	gameState.Players[playerID] = PlayerState{Position{2.0, 2.0, 0.0}}
+	// gameState.Players[playerID] = PlayerState{Position{2.0, 2.0, 0.0}}
+	var start = time.Now().UnixNano() / 1000000
 	for {
 		var now = time.Now().UnixNano() / 1000000
 		var delta = float64(now-start) / 1000.0
@@ -121,7 +131,6 @@ func Start(playerID PlayerID) (chan bool, chan GameState, chan GameLog) {
 	var stateChan = make(chan GameState)
 	// This channel is used to receive action updates from the Raft network
 	var actionChan = make(chan GameLog)
-	var now = time.Now().UnixNano() / 1000000
-	go run(playerID, requestState, stateChan, actionChan, now)
+	go run(playerID, requestState, stateChan, actionChan)
 	return requestState, stateChan, actionChan
 }

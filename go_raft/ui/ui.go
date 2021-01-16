@@ -5,8 +5,11 @@ import (
 	"go_raft/engine"
 	"image"
 	"image/color"
+	"image/png"
 	"log"
 	"math"
+	"os"
+	"sort"
 
 	"golang.org/x/exp/shiny/driver"
 	"golang.org/x/exp/shiny/screen"
@@ -18,11 +21,20 @@ const screenWidth = 640
 const screenHeight = 480
 
 // Field of view ~ PI/4
-var fov = 3.14159 / 4.0
+var fov = math.Pi / 4.0
 var mapHeight = len(engine.GameMap)
 var mapWidth = len(engine.GameMap[0])
 var maxDepth = float64(mapHeight)
 var screenSize = image.Point{screenWidth, screenHeight}
+
+type sprite struct {
+	fileName string
+	img      image.Image
+	height   float64
+	width    float64
+}
+
+var sprites = make(map[string]*sprite)
 
 type uiOptions struct {
 	playerID         engine.PlayerID
@@ -36,7 +48,35 @@ func checkError(err error) {
 		fmt.Println("Error: ", err)
 	}
 }
+
+func getSpritePixel(x float64, y float64, spr *sprite) (r, g, b, a uint32) {
+	var sprX = int(x * (*spr).width)
+	var sprY = int(y * (*spr).height)
+	return (*spr).img.At(sprX, sprY).RGBA()
+}
+
+func distance(pos1 engine.Position, pos2 engine.Position) float64 {
+	return math.Sqrt(math.Pow(math.Abs(pos1.X-pos2.X), 2.0) + math.Pow(math.Abs(pos1.Y-pos2.Y), 2.0))
+}
+
+func getOrderedPlayers(state *engine.GameState, playerID engine.PlayerID) []engine.Position {
+	var playerPosition engine.Position
+	var positions []engine.Position
+	for id, data := range (*state).Players {
+		if id != playerID {
+			positions = append(positions, data.GetPosition())
+		} else {
+			playerPosition = data.GetPosition()
+		}
+	}
+	sort.Slice(positions, func(i1, i2 int) bool {
+		return distance(positions[i1], playerPosition) < distance(positions[i2], playerPosition)
+	})
+	return positions
+}
+
 func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window) {
+	depthBuffer := make([]float64, screenWidth)
 	for {
 		buff, err := uiScreen.NewBuffer(screenSize)
 		checkError(err)
@@ -47,10 +87,10 @@ func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window) {
 		gameState := <-(*opt).gameStateChan
 		// Get player position in game map
 		playerData := gameState.Players[(*opt).playerID]
-		playerX, playerY, playerA := playerData.GetPosition()
-
+		playerPosition := playerData.GetPosition()
+		otherPlayersPositions := getOrderedPlayers(&gameState, (*opt).playerID)
 		for x := 0; x < screenWidth; x++ {
-			var rayAngle = (playerA - fov/2.0) + (float64(x)/float64(screenWidth))*fov
+			var rayAngle = (playerPosition.A - fov/2.0) + (float64(x)/float64(screenWidth))*fov
 			var distanceToWall = 0.0
 
 			var hitWall = false
@@ -61,8 +101,8 @@ func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window) {
 			for !hitWall && distanceToWall < maxDepth {
 				distanceToWall += 0.1
 
-				var testX = int(playerX + eyeX*distanceToWall)
-				var testY = int(playerY + eyeY*distanceToWall)
+				var testX = int(playerPosition.X + eyeX*distanceToWall)
+				var testY = int(playerPosition.Y + eyeY*distanceToWall)
 
 				// Test ray out of bounds
 				if testX < 0 || testX > mapWidth || testY < 0 || testY > mapHeight {
@@ -77,6 +117,9 @@ func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window) {
 			var ceiling = (float64(screenHeight) / 2.0) - float64(screenHeight)/distanceToWall
 			var floor = float64(screenHeight) - ceiling
 
+			depthBuffer[x] = distanceToWall
+
+			// Draw walls, floor, ceiling
 			for y := 0; y < screenHeight; y++ {
 				mem.SetRGBA(x, y, color.RGBA{0, 0, 0, 255})
 				if float64(y) < ceiling {
@@ -92,6 +135,48 @@ func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window) {
 				}
 			}
 		}
+
+		for _, otherPosition := range otherPlayersPositions {
+			vecX := otherPosition.X - playerPosition.X
+			vecY := otherPosition.Y - playerPosition.Y
+			distanceFromPlayer := math.Sqrt(vecX*vecX + vecY*vecY)
+			eyeX := math.Sin(playerPosition.A)
+			eyeY := math.Cos(playerPosition.A)
+
+			objectAngle := math.Atan2(eyeY, eyeX) - math.Atan2(vecY, vecX)
+
+			if objectAngle < -math.Pi {
+				objectAngle += 2.0 * math.Pi
+
+			}
+			if objectAngle > math.Pi {
+				objectAngle -= 2.0 * math.Pi
+			}
+
+			inPlayerFOV := math.Abs(objectAngle) < fov/2.0
+			if inPlayerFOV && distanceFromPlayer >= 0.5 && distanceFromPlayer < maxDepth {
+				objectCeiling := screenHeight/2.0 - screenHeight/distanceFromPlayer
+				objectFloor := screenHeight - objectCeiling
+				objectHeight := objectFloor - objectCeiling
+				objectAspectRatio := sprites["player"].height / sprites["player"].width
+				objectWidth := objectHeight / objectAspectRatio
+				middleOfObject := (0.5*(objectAngle/(fov/2.0)) + 0.5) * screenWidth
+				for lx := 0; lx < int(objectWidth); lx++ {
+					for ly := 0; ly < int(objectHeight); ly++ {
+						sampleX := float64(lx) / objectWidth
+						sampleY := float64(ly) / objectHeight
+						r, g, b, a := getSpritePixel(sampleX, sampleY, sprites["player"])
+						objectColumn := int(middleOfObject + float64(lx) - (objectWidth / 2.0))
+						if objectColumn >= 0 && objectColumn < screenWidth {
+							if a > 0 && depthBuffer[objectColumn] >= distanceFromPlayer {
+								mem.SetRGBA(objectColumn, int(objectCeiling)+ly, color.RGBA{uint8(r), uint8(g), uint8(b), uint8(a)})
+								depthBuffer[objectColumn] = distanceFromPlayer
+							}
+						}
+					}
+				}
+			}
+		}
 		newTexture, err := uiScreen.NewTexture(screenSize)
 		checkError(err)
 		newTexture.Upload(image.Point{}, buff, buff.Bounds())
@@ -104,13 +189,13 @@ func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window) {
 func run(opt *uiOptions) {
 	driver.Main(func(uiScreen screen.Screen) {
 		window, err := uiScreen.NewWindow(&screen.NewWindowOptions{
-			Title: "UI",
+			Title: "UI - " + fmt.Sprint((*opt).playerID),
 		})
 		checkError(err)
 		defer window.Release()
 
 		go paintScreen(opt, uiScreen, window)
-
+		(*opt).actionChan <- engine.GameLog{(*opt).playerID, 5}
 		for {
 			e := window.NextEvent()
 
@@ -147,11 +232,32 @@ func run(opt *uiOptions) {
 	})
 }
 
+func initializeSprites() {
+	sprites["player"] = &sprite{"/assets/player_spritesheet.png", nil, 64, 64}
+}
+
+func loadImages() {
+	dir, err := os.Getwd()
+	checkError(err)
+	for _, spr := range sprites {
+		file, err := os.Open(dir + (*spr).fileName)
+		checkError(err)
+		defer file.Close()
+
+		imageData, err := png.Decode(file)
+		checkError(err)
+
+		(*spr).img = imageData
+	}
+}
+
 func Start(playerID engine.PlayerID, stateRequestChan chan bool, gameStateChan chan engine.GameState, actionChan chan engine.GameLog) {
 	var opt = &uiOptions{
 		playerID,
 		stateRequestChan,
 		gameStateChan,
 		actionChan}
+	initializeSprites()
+	loadImages()
 	go run(opt)
 }

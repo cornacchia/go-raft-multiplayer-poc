@@ -54,15 +54,19 @@ func getOneConnectionID(connections *map[raft.ServerID]*rpc.Client) raft.ServerI
 	return ""
 }
 
-func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConnectionChan chan raft.ServerID) {
+func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConnectionChan chan raft.ServerID, actionChan chan engine.GameLog, msg engine.GameLog) {
 	select {
 	case <-call.Done:
 		if !(*response).Applied {
-			newConnectionChan <- (*response).LeaderID
+			if (*response).LeaderID != "" {
+				newConnectionChan <- (*response).LeaderID
+			}
+			// Send again
+			actionChan <- msg
 		}
 	case <-time.After(time.Millisecond * actionCallTimeout):
-		fmt.Println("ActionRPC: Did not receive response from node")
-		// TODO: handle error
+		// Send again
+		actionChan <- msg
 	}
 }
 
@@ -75,7 +79,7 @@ func manageActions(actionChan chan engine.GameLog, connections *map[raft.ServerI
 			var actionResponse raft.ActionResponse
 			var actionArgs = raft.ActionArgs{msg.Id, msg.Action}
 			actionCall := (*connections)[currentConnection].Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
-			go handleActionResponse(actionCall, &actionResponse, newConnectionID)
+			go handleActionResponse(actionCall, &actionResponse, newConnectionID, actionChan, msg)
 		case newLeaderID := <-newConnectionID:
 			currentConnection = newLeaderID
 		}
