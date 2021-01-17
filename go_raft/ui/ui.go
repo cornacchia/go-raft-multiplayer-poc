@@ -74,7 +74,7 @@ func getOrderedPlayers(state *engine.GameState, playerID engine.PlayerID) []engi
 		}
 	}
 	sort.Slice(positions, func(i1, i2 int) bool {
-		return distance(positions[i1], playerPosition) < distance(positions[i2], playerPosition)
+		return distance(positions[i1], playerPosition) >= distance(positions[i2], playerPosition)
 	})
 	return positions
 }
@@ -205,7 +205,6 @@ func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window, k
 						if objectColumn >= 0 && objectColumn < screenWidth {
 							if a > 0 && depthBuffer[objectColumn] >= distanceFromPlayer {
 								mem.SetRGBA(objectColumn, int(objectCeiling)+ly, color.RGBA{uint8(r), uint8(g), uint8(b), uint8(a)})
-								depthBuffer[objectColumn] = distanceFromPlayer
 							}
 						}
 					}

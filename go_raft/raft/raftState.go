@@ -112,6 +112,7 @@ type state interface {
 	getLog(int) RaftLog
 	checkCommits()
 	getCurrentLeader() ServerID
+	getID() ServerID
 }
 
 /* To start a new election a server:
@@ -369,4 +370,8 @@ func (_state *stateImpl) checkCommits() {
 
 func (_state *stateImpl) getCurrentLeader() ServerID {
 	return _state.currentLeader
+}
+
+func (_state *stateImpl) getID() ServerID {
+	return _state.id
 }

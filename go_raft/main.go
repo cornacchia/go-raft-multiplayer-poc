@@ -9,6 +9,7 @@ import (
 	"net/rpc"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -47,11 +48,14 @@ func checkError(err error) {
 }
 
 // Returns an arbitrary connection id from the map
-func getOneConnectionID(connections *map[raft.ServerID]*rpc.Client) raft.ServerID {
-	for id := range *connections {
-		return id
-	}
-	return ""
+func getOneConnectionID(connections *sync.Map) raft.ServerID {
+	var returnID raft.ServerID = ""
+	(*connections).Range(func(id interface{}, connection interface{}) bool {
+		returnID = id.(raft.ServerID)
+		return false
+	})
+
+	return returnID
 }
 
 func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConnectionChan chan raft.ServerID, actionChan chan engine.GameLog, msg engine.GameLog) {
@@ -70,7 +74,7 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConn
 	}
 }
 
-func manageActions(actionChan chan engine.GameLog, connections *map[raft.ServerID]*rpc.Client) {
+func manageActions(actionChan chan engine.GameLog, connections *sync.Map) {
 	var currentConnection = getOneConnectionID(connections)
 	newConnectionID := make(chan raft.ServerID)
 	for {
@@ -78,7 +82,8 @@ func manageActions(actionChan chan engine.GameLog, connections *map[raft.ServerI
 		case msg := <-actionChan:
 			var actionResponse raft.ActionResponse
 			var actionArgs = raft.ActionArgs{msg.Id, msg.Action}
-			actionCall := (*connections)[currentConnection].Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
+			var conn, _ = (*connections).Load(currentConnection)
+			actionCall := (*conn.(*rpc.Client)).Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
 			go handleActionResponse(actionCall, &actionResponse, newConnectionID, actionChan, msg)
 		case newLeaderID := <-newConnectionID:
 			currentConnection = newLeaderID
@@ -86,17 +91,18 @@ func manageActions(actionChan chan engine.GameLog, connections *map[raft.ServerI
 	}
 }
 
-func addSelfConnection(port string, connections *map[raft.ServerID]*rpc.Client) {
+func addSelfConnection(port string, connections *sync.Map) {
 	client, err := rpc.DialHTTP("tcp", "127.0.0.1:"+string(port))
 	checkError(err)
-	(*connections)[raft.ServerID(port)] = client
+	(*connections).Store(raft.ServerID(port), client)
 }
 
-func createConnections(conn *map[raft.ServerID]*rpc.Client) *map[raft.ServerID]*rpc.Client {
-	newConnections := make(map[raft.ServerID]*rpc.Client)
-	for k, v := range *conn {
-		newConnections[k] = v
-	}
+func createConnections(conn *sync.Map) *sync.Map {
+	var newConnections sync.Map
+	(*conn).Range(func(id interface{}, connection interface{}) bool {
+		newConnections.Store(id.(raft.ServerID), connection.(*rpc.Client))
+		return true
+	})
 	return &newConnections
 }
 
@@ -128,9 +134,10 @@ func main() {
 		var uiActionChan = make(chan engine.GameLog)
 		var stateReqChan, stateChan, actionChan = engine.Start(playerID)
 		ui.Start(playerID, stateReqChan, stateChan, uiActionChan)
-		var conn = raft.Start(mode, port, otherServers, actionChan)
-		var nodeConnections = createConnections(conn)
-		addSelfConnection(port, nodeConnections)
+		var _ = raft.Start(mode, port, otherServers, actionChan)
+		var nodeConnections, _ = raft.ConnectToRaftServers(raft.ServerID(port), otherServers)
+		//var nodeConnections = createConnections(conn)
+		//addSelfConnection(port, nodeConnections)
 		manageActions(uiActionChan, nodeConnections)
 	} else {
 		raft.Start(mode, port, otherServers, nil)
