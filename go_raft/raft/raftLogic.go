@@ -16,6 +16,11 @@ type raftConnection struct {
 	connection *rpc.Client
 }
 
+type action struct {
+	Msg          engine.GameLog
+	ChanResponse chan *ActionResponse
+}
+
 type options struct {
 	mode   string
 	_state state
@@ -32,9 +37,7 @@ type options struct {
 	// This is used to get responses from remote nodes when sending a RequestVoteRPC
 	myRequestVoteResponseChan chan *RequestVoteResponse
 	// This is used to receive messages from clients RPC
-	msgChan chan engine.GameLog
-	// This is used to send responses to actions RPC
-	msgResponseChan chan *ActionResponse
+	msgChan chan action
 	// This is used to send messages to the game engine
 	actionChan chan engine.GameLog
 	// TODO usare sync.Map https://golang.org/pkg/sync/#Map
@@ -44,7 +47,7 @@ type options struct {
 
 // Start function for server logic
 func Start(mode string, port string, otherServers []ServerID, actionChan chan engine.GameLog) *sync.Map {
-	msgChan := make(chan engine.GameLog)
+	msgChan := make(chan action)
 	var newOptions = &options{
 		mode,
 		newState(port, otherServers),
@@ -55,7 +58,6 @@ func Start(mode string, port string, otherServers []ServerID, actionChan chan en
 		make(chan *RequestVoteResponse),
 		make(chan *RequestVoteResponse),
 		msgChan,
-		make(chan *ActionResponse),
 		actionChan,
 		nil,
 		0}
@@ -151,19 +153,19 @@ func sendRequestVoteRPCs(opt *options, requestVoteArgs *RequestVoteArgs) {
  * RPCs from a Leader or Candidate.
  */
 func handleFollower(opt *options) {
-	// fmt.Println("# Follower: handle turn")
+	// fmt.Println("# Follower: handle current turn")
 	var electionTimeoutTimer = (*opt)._state.checkElectionTimeout()
 	select {
 	// Received message from client: respond with correct leader id
-	case <-(*opt).msgChan:
+	case act := <-(*opt).msgChan:
 		// fmt.Println("# Follower: received action")
-		(*opt).msgResponseChan <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
+		act.ChanResponse <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
 	// Receive an AppendEntriesRPC
 	case appEntrArgs := <-(*opt).appendEntriesArgsChan:
 		// fmt.Println("# Follower: receive AppendEntriesRPC")
 		(*opt)._state.stopElectionTimeout()
 		(*opt).appendEntriesResponseChan <- (*opt)._state.handleAppendEntries(appEntrArgs)
-	// Receive a RequestVoteRPC
+		// Receive a RequestVoteRPC
 	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
 		// fmt.Println("# Follower: receive RequestVoteRPC")
 		(*opt)._state.stopElectionTimeout()
@@ -183,9 +185,9 @@ func handleCandidate(opt *options) {
 	var electionTimeoutTimer = (*opt)._state.checkElectionTimeout()
 	select {
 	// Received message from client: respond with correct leader id
-	case <-(*opt).msgChan:
+	case act := <-(*opt).msgChan:
 		// fmt.Println("## Candidate: received action")
-		(*opt).msgResponseChan <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
+		act.ChanResponse <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
 	// Receive an AppendEntriesRPC
 	case appEntrArgs := <-(*opt).appendEntriesArgsChan:
 		// fmt.Println("## Candidate: receive AppendEntriesRPC")
@@ -241,17 +243,27 @@ func sendAppendEntriesRPCs(opt *options, argsFunction func(ServerID) *AppendEntr
 	})
 }
 
+func handleResponseToMessage(opt *options, chanApplied chan bool, chanResponse chan *ActionResponse) {
+	const handleResponseTimeout = 500
+	select {
+	case <-chanApplied:
+		chanResponse <- &ActionResponse{true, (*opt)._state.getCurrentLeader()}
+	case <-time.After(time.Millisecond * handleResponseTimeout):
+		fmt.Println("Timeout waiting for action to be applied")
+	}
+}
+
 func handleLeader(opt *options) {
 	// fmt.Println("### Leader: handle turn")
 	const hearthbeatTimeout time.Duration = 20
 	select {
 	// Received message from client
-	case msg := <-(*opt).msgChan:
-		// fmt.Println("### Leader: receive action message")
-		(*opt)._state.addNewLog(msg)
+	case act := <-(*opt).msgChan:
+		//fmt.Println("### Leader: receive action message")
+		(*opt)._state.addNewLog(act.Msg)
 		sendAppendEntriesRPCs(opt, (*opt)._state.getAppendEntriesArgs)
-		// TODO: handle response only when message is committed
-		(*opt).msgResponseChan <- &ActionResponse{true, (*opt)._state.getCurrentLeader()}
+		go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
+		// (*opt).msgResponseChan <- &ActionResponse{true, (*opt)._state.getCurrentLeader()}
 	// Handle responses to AppendEntries
 	case appendEntriesResponse := <-(*opt).myAppendEntriesResponseChan:
 		// fmt.Println("### Leader: receive response to append entries rpc")
@@ -280,13 +292,16 @@ func applyLog(opt *options, log RaftLog) {
 	if (*opt).mode == "Client" {
 		(*opt).actionChan <- log.Log
 	}
-	// TODO?: respond to client (maybe not necessary, being this a game)
+	if (*opt)._state.getState() == Leader {
+		log.Log.ChanApplied <- true
+	}
 }
 
 func checkLogsToApply(opt *options) {
 	var idxToExec = (*opt)._state.updateLastApplied()
-	if idxToExec > 0 {
+	for idxToExec > 0 {
 		applyLog(opt, (*opt)._state.getLog(idxToExec))
+		idxToExec = (*opt)._state.updateLastApplied()
 	}
 }
 

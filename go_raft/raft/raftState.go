@@ -82,7 +82,7 @@ func newState(id string, otherStates []ServerID) *stateImpl {
 		"",
 		0,
 		"",
-		[]RaftLog{{0, 0, engine.GameLog{-1, -1}}},
+		[]RaftLog{{0, 0, engine.GameLog{-1, -1, nil}}},
 		Follower,
 		0,
 		0,

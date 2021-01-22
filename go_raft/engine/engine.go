@@ -29,8 +29,9 @@ type GameState struct {
 }
 
 type GameLog struct {
-	Id     PlayerID
-	Action int
+	Id          PlayerID
+	Action      int
+	ChanApplied chan bool
 }
 
 var GameMap = [16]string{

@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"time"
 
 	"golang.org/x/exp/shiny/driver"
 	"golang.org/x/exp/shiny/screen"
@@ -92,16 +93,26 @@ func addLabel(img *image.RGBA, x, y int, label string) {
 	d.DrawString(label)
 }
 
-func writeStateToScreen(position engine.Position, textMem *image.RGBA, img *image.RGBA) {
+func writeStateToScreen(position engine.Position, delta int64, textMem *image.RGBA, img *image.RGBA) {
 	positionString := "(x: " + fmt.Sprintf("%.2f", position.X) + ", y: " + fmt.Sprintf("%.2f", position.Y) + ", a: " + fmt.Sprintf("%.2f", position.A) + ")"
+	fpsString := "fps: " + fmt.Sprintf("%.2f", 1000.0/float64(delta))
 	addLabel(img, 0, 15, positionString)
+	addLabel(img, 0, 30, fpsString)
 
 	draw.Draw(textMem, textMem.Bounds(), img, image.ZP, draw.Src)
 }
 
+func extractMs(t time.Time) int64 {
+	return time.Duration(t.Nanosecond()).Milliseconds()
+}
+
 func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window, killChan chan bool) {
+	t1 := extractMs(time.Now())
 	depthBuffer := make([]float64, screenWidth)
 	for {
+		t2 := extractMs(time.Now())
+		delta := t2 - t1
+		t1 = t2
 		select {
 		case <-killChan:
 			return
@@ -123,7 +134,7 @@ func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window, k
 		playerData := gameState.Players[(*opt).playerID]
 		playerPosition := playerData.GetPosition()
 		otherPlayersPositions := getOrderedPlayers(&gameState, (*opt).playerID)
-		writeStateToScreen(playerPosition, textMem, img)
+		writeStateToScreen(playerPosition, delta, textMem, img)
 
 		for x := 0; x < screenWidth; x++ {
 			var rayAngle = (playerPosition.A - fov/2.0) + (float64(x)/float64(screenWidth))*fov
@@ -243,7 +254,7 @@ func run(opt *uiOptions) {
 
 		killChan := make(chan bool)
 		go paintScreen(opt, uiScreen, window, killChan)
-		(*opt).actionChan <- engine.GameLog{(*opt).playerID, 5}
+		(*opt).actionChan <- engine.GameLog{(*opt).playerID, 5, nil}
 		for {
 			e := window.NextEvent()
 
@@ -267,13 +278,13 @@ func run(opt *uiOptions) {
 					killChan <- true
 					return
 				} else if e.Code == key.CodeW && e.Direction == key.DirPress {
-					(*opt).actionChan <- engine.GameLog{(*opt).playerID, 0}
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, 0, nil}
 				} else if e.Code == key.CodeA && e.Direction == key.DirPress {
-					(*opt).actionChan <- engine.GameLog{(*opt).playerID, 3}
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, 3, nil}
 				} else if e.Code == key.CodeS && e.Direction == key.DirPress {
-					(*opt).actionChan <- engine.GameLog{(*opt).playerID, 2}
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, 2, nil}
 				} else if e.Code == key.CodeD && e.Direction == key.DirPress {
-					(*opt).actionChan <- engine.GameLog{(*opt).playerID, 1}
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, 1, nil}
 				}
 			case error:
 				log.Print(e)

@@ -15,15 +15,6 @@ import (
 
 const actionCallTimeout = 500
 
-/* TODO:
-Two modes of initialization:
-	* Node
-		* Knows from the beginning to whom it should talk to
-	* UI + Engine + Node
-		* Knows at least one address
-		* Gets all other nodes from this one
-*/
-
 /*
 Configuration change (preparation):
 	* The node joins as a non voting member
@@ -37,9 +28,6 @@ Configuration change:
 If the leader is not part of the next configuration:
 	* It steps down after having committed the relative log
 */
-
-// Setup UDP server to get commands from UI
-// Setup a channel to get
 
 func checkError(err error) {
 	if err != nil {
@@ -147,20 +135,4 @@ func main() {
 			}
 		}
 	}
-
-	/* TODO:
-	if mode === Client
-	start engine ->
-		get a channel for communications node -> engine
-		get a channel for communications ui <-> engine
-	start raft node ->
-		get a channel to communicate messages
-	start ui ->
-		the ui handles a udp client to send commands to the leader
-	start udp server ->
-		communicate received commands to the node through the channel
-	so in order start: engine, raft node, udp server, ui
-	*/
-	// TODO: msgChan should be handled by UDP server
-
 }

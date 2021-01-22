@@ -46,8 +46,7 @@ type RaftListener struct {
 	AppendEntriesResponseChan chan *AppendEntriesResponse
 	RequestVoteArgsChan       chan *RequestVoteArgs
 	RequestVoteResponseChan   chan *RequestVoteResponse
-	MessageChan               chan engine.GameLog
-	MessageResponseChan       chan *ActionResponse
+	MessageChan               chan action
 }
 
 func initRaftListener(lstOptions *options) *RaftListener {
@@ -56,8 +55,7 @@ func initRaftListener(lstOptions *options) *RaftListener {
 		(*lstOptions).appendEntriesResponseChan,
 		(*lstOptions).requestVoteArgsChan,
 		(*lstOptions).requestVoteResponseChan,
-		(*lstOptions).msgChan,
-		(*lstOptions).msgResponseChan}
+		(*lstOptions).msgChan}
 }
 
 func (listener *RaftListener) AppendEntriesRPC(args *AppendEntriesArgs, reply *AppendEntriesResponse) error {
@@ -80,8 +78,13 @@ func (listener *RaftListener) RequestVoteRPC(args *RequestVoteArgs, reply *Reque
 }
 
 func (listener *RaftListener) ActionRPC(args *ActionArgs, reply *ActionResponse) error {
-	listener.MessageChan <- engine.GameLog{(*args).Id, (*args).Action}
-	repl := <-listener.MessageResponseChan
+	chanApplied := make(chan bool)
+	chanResponse := make(chan *ActionResponse)
+	var act = action{
+		engine.GameLog{(*args).Id, (*args).Action, chanApplied},
+		chanResponse}
+	listener.MessageChan <- act
+	repl := <-chanResponse
 	reply.Applied = repl.Applied
 	reply.LeaderID = repl.LeaderID
 	return nil
