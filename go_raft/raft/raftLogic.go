@@ -39,8 +39,7 @@ type options struct {
 	// This is used to receive messages from clients RPC
 	msgChan chan action
 	// This is used to send messages to the game engine
-	actionChan chan engine.GameLog
-	// TODO usare sync.Map https://golang.org/pkg/sync/#Map
+	actionChan          chan engine.GameLog
 	connections         *sync.Map
 	numberOfConnections int
 }
