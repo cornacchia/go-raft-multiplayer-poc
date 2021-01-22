@@ -148,12 +148,16 @@ func sendRequestVoteRPCs(opt *options, requestVoteArgs *RequestVoteArgs) {
 	})
 }
 
+func countConnections(opt *options) int {
+	return (*opt).numberOfConnections
+}
+
 /*
  * A server remains in Follower state as long as it receives valid
  * RPCs from a Leader or Candidate.
  */
 func handleFollower(opt *options) {
-	// fmt.Println("# Follower: handle current turn")
+	fmt.Println("# Follower: handle current turn")
 	var electionTimeoutTimer = (*opt)._state.checkElectionTimeout()
 	select {
 	// Received message from client: respond with correct leader id
@@ -175,13 +179,17 @@ func handleFollower(opt *options) {
 		(*opt)._state.stopElectionTimeout()
 		(*opt)._state.startElection()
 		// Issue requestvoterpc in parallel to other servers
-		var requestVoteArgs = (*opt)._state.prepareRequestVoteRPC()
-		sendRequestVoteRPCs(opt, requestVoteArgs)
+		if countConnections(opt) > 0 {
+			var requestVoteArgs = (*opt)._state.prepareRequestVoteRPC()
+			sendRequestVoteRPCs(opt, requestVoteArgs)
+		} else {
+			(*opt)._state.winElection()
+		}
 	}
 }
 
 func handleCandidate(opt *options) {
-	// fmt.Println("## Candidate: handle current turn")
+	fmt.Println("## Candidate: handle current turn")
 	var electionTimeoutTimer = (*opt)._state.checkElectionTimeout()
 	select {
 	// Received message from client: respond with correct leader id
@@ -254,7 +262,7 @@ func handleResponseToMessage(opt *options, chanApplied chan bool, chanResponse c
 }
 
 func handleLeader(opt *options) {
-	// fmt.Println("### Leader: handle turn")
+	fmt.Println("### Leader: handle turn")
 	const hearthbeatTimeout time.Duration = 20
 	select {
 	// Received message from client
