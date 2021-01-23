@@ -457,6 +457,7 @@ func applyLog(opt *options, log RaftLog) {
 		}
 		if log.Type == Configuration && log.ConfigurationLog.OldCount == 0 {
 			log.ConfigurationLog.ChanApplied <- true
+			(*opt)._state.removeNewServerResponseChan(log.ConfigurationLog.Id)
 		}
 	}
 }

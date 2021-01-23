@@ -142,6 +142,7 @@ type state interface {
 	addNewServer(ServerID)
 	updateServerConfiguration(ServerID, [2]bool)
 	updateNewServerResponseChans(ServerID, chan bool)
+	removeNewServerResponseChan(ServerID)
 	getNewServerResponseChan(ServerID) chan bool
 }
 
@@ -463,6 +464,10 @@ func (_state *stateImpl) updateServerConfiguration(sid ServerID, conf [2]bool) {
 
 func (_state *stateImpl) updateNewServerResponseChans(id ServerID, channel chan bool) {
 	_state.newServerResponseChan[id] = channel
+}
+
+func (_state *stateImpl) removeNewServerResponseChan(id ServerID) {
+	delete(_state.newServerResponseChan, id)
 }
 
 func (_state *stateImpl) getNewServerResponseChan(id ServerID) chan bool {
