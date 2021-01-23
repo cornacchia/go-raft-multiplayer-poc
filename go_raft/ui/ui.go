@@ -7,7 +7,6 @@ import (
 	"image/color"
 	"image/draw"
 	"image/png"
-	"log"
 	"math"
 	"os"
 	"sort"
@@ -20,6 +19,8 @@ import (
 	"golang.org/x/image/math/fixed"
 	"golang.org/x/mobile/event/key"
 	"golang.org/x/mobile/event/lifecycle"
+
+	log "github.com/sirupsen/logrus"
 )
 
 const screenWidth = 640
@@ -50,7 +51,7 @@ type uiOptions struct {
 
 func checkError(err error) {
 	if err != nil {
-		fmt.Println("Error: ", err)
+		log.Error("Error: ", err)
 	}
 }
 

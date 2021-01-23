@@ -3,12 +3,13 @@ package raft
 import (
 	"fmt"
 	"go_raft/engine"
-	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"sync"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 type raftConnectionResponse struct {
@@ -89,7 +90,7 @@ func connectToRaftServer(opt *options, serverPort ServerID, result chan *raftCon
 	for time.Now().Unix() < startTime+600 && !connected {
 		client, err := rpc.DialHTTP("tcp", "127.0.0.1:"+string(serverPort))
 		if err != nil {
-			fmt.Println("Error connecting to node: " + string(serverPort))
+			log.Warning("Error connecting to node: " + string(serverPort))
 			time.Sleep(1 * time.Second)
 		} else {
 			connected = true
@@ -97,7 +98,7 @@ func connectToRaftServer(opt *options, serverPort ServerID, result chan *raftCon
 				(*opt)._state.addNewServer(serverPort)
 			}
 
-			fmt.Println("Connected to node: " + string(serverPort))
+			log.Info("Connected to node: " + string(serverPort))
 			var newConnection = raftConnectionResponse{serverPort, client}
 			result <- &newConnection
 		}
@@ -145,7 +146,7 @@ func startListeningServer(raftListener *RaftListener, port string) {
 		log.Fatal("listen error:", err)
 	}
 	go http.Serve(listener, nil)
-	fmt.Printf("Raft listener up on port %s \n", port)
+	log.Info(fmt.Sprintf("Raft listener up on port %s \n", port))
 }
 
 func sendRequestVoteRPCs(opt *options, requestVoteArgs *RequestVoteArgs) {
@@ -163,7 +164,7 @@ func sendRequestVoteRPCs(opt *options, requestVoteArgs *RequestVoteArgs) {
 			case <-requestVoteCall.Done:
 				(*opt).myRequestVoteResponseChan <- &requestVoteResponse
 			case <-time.After(time.Second * electionTimeout):
-				fmt.Println("RequestVoteRPC: Did not receive response from: " + string(id))
+				log.Warning("RequestVoteRPC: Did not receive response from: " + string(id))
 				// TODO: handle error
 			}
 		}(opt, requestVoteCall, id.(ServerID))
@@ -207,7 +208,7 @@ func checkNewConfigurations(opt *options, appEntrArgs *AppendEntriesArgs) {
  * RPCs from a Leader or Candidate.
  */
 func handleFollower(opt *options) {
-	// fmt.Println("# Follower: handle current turn")
+	log.Trace("# Follower: handle current turn")
 	var electionTimeoutTimer = (*opt)._state.checkElectionTimeout()
 	select {
 	// Received message from client: respond with correct leader id
@@ -254,7 +255,7 @@ func checkVotesMajority(opt *options, newVotes int, oldVotes int) bool {
 }
 
 func handleCandidate(opt *options) {
-	// fmt.Println("## Candidate: handle current turn")
+	log.Trace("## Candidate: handle current turn")
 	var electionTimeoutTimer = (*opt)._state.checkElectionTimeout()
 	select {
 	// Received message from client: respond with correct leader id
@@ -310,7 +311,7 @@ func appendEntriesRPCAction(opt *options, argsFunction func(ServerID) *AppendEnt
 		case <-appendEntriesCall.Done:
 			(*opt).myAppendEntriesResponseChan <- &appendEntriesResponse
 		case <-time.After(time.Millisecond * appendEntriesTimeout):
-			fmt.Println("AppendEntriesRPC: Did not receive response from: " + string(id))
+			log.Warning("AppendEntriesRPC: Did not receive response from: " + string(id))
 			// TODO: handle error
 		}
 	}(opt, appendEntriesCall, id.(ServerID))
@@ -334,12 +335,12 @@ func handleResponseToMessage(opt *options, chanApplied chan bool, chanResponse c
 	case <-chanApplied:
 		chanResponse <- &ActionResponse{true, (*opt)._state.getCurrentLeader()}
 	case <-time.After(time.Millisecond * handleResponseTimeout):
-		fmt.Println("Timeout waiting for action to be applied")
+		log.Warning("Timeout waiting for action to be applied")
 	}
 }
 
 func startConfigurationChange(opt *options, newID ServerID) (map[ServerID][2]bool, int, int) {
-	fmt.Println("Start configuration change")
+	log.Debug("Start configuration change")
 	var newCount = 0
 	var oldCount = 0
 	var connectionMap = map[ServerID][2]bool{}
@@ -364,7 +365,7 @@ func startConfigurationChange(opt *options, newID ServerID) (map[ServerID][2]boo
 }
 
 func finishConfigurationChange(opt *options) (map[ServerID][2]bool, int) {
-	fmt.Println("Finish configuration change")
+	log.Debug("Finish configuration change")
 	var newCount = 0
 	var connectionMap = map[ServerID][2]bool{}
 	// Remove new connection from unvoting connection list
@@ -386,7 +387,7 @@ func convertID(pID engine.PlayerID) ServerID {
 }
 
 func handleLeader(opt *options) {
-	// fmt.Println("### Leader: handle turn")
+	log.Trace("### Leader: handle turn")
 	const hearthbeatTimeout time.Duration = 20
 	select {
 	// Received message from client

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"go_raft/engine"
 	"go_raft/raft"
 	"go_raft/ui"
@@ -11,6 +10,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 const actionCallTimeout = 500
@@ -31,7 +32,7 @@ If the leader is not part of the next configuration:
 
 func checkError(err error) {
 	if err != nil {
-		fmt.Println("Error: ", err)
+		log.Error("Error: ", err)
 	}
 }
 
@@ -78,9 +79,6 @@ func manageActions(actionChan chan engine.GameLog, connections *sync.Map, otherS
 	for {
 		select {
 		case msg := <-actionChan:
-			if msg.Action == engine.CONNECT {
-				fmt.Println("Send connection message")
-			}
 			var actionResponse raft.ActionResponse
 			var actionArgs = raft.ActionArgs{msg.Id, msg.Action}
 			var conn, _ = (*connections).Load(currentConnection)
@@ -102,12 +100,12 @@ func addSelfConnection(port string, connections *sync.Map) {
 func main() {
 	// Seed random number generator
 	rand.Seed(time.Now().UnixNano())
+	log.SetLevel(log.InfoLevel)
 
 	// Command line arguments
 	args := os.Args
 	if len(args) < 3 {
-		fmt.Println("No port provided!")
-		os.Exit(0)
+		log.Fatal("No port provided!")
 	}
 	mode := args[1]
 	port := args[2]
