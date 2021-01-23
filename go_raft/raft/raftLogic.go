@@ -191,7 +191,7 @@ func checkNewConfigurations(opt *options, appEntrArgs *AppendEntriesArgs) {
 				} else {
 					// Otherwise we need to connect to the node
 					responseChan := make(chan *raftConnectionResponse)
-					connectToRaftServer(opt, id, responseChan)
+					go connectToRaftServer(opt, id, responseChan)
 					resp := <-responseChan
 					var newConnection = RaftConnection{(*resp).connection, false, true}
 					(*opt)._state.updateServerConfiguration((*resp).id, [2]bool{false, true})
@@ -339,6 +339,7 @@ func handleResponseToMessage(opt *options, chanApplied chan bool, chanResponse c
 }
 
 func startConfigurationChange(opt *options, newID ServerID) (map[ServerID][2]bool, int, int) {
+	fmt.Println("Start configuration change")
 	var newCount = 0
 	var oldCount = 0
 	var connectionMap = map[ServerID][2]bool{}
@@ -363,6 +364,7 @@ func startConfigurationChange(opt *options, newID ServerID) (map[ServerID][2]boo
 }
 
 func finishConfigurationChange(opt *options) (map[ServerID][2]bool, int) {
+	fmt.Println("Finish configuration change")
 	var newCount = 0
 	var connectionMap = map[ServerID][2]bool{}
 	// Remove new connection from unvoting connection list
