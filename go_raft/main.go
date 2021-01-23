@@ -36,9 +36,16 @@ func checkError(err error) {
 }
 
 // Returns an arbitrary connection id from the map
-func getOneConnectionID(connections *sync.Map) raft.ServerID {
+func getOneConnectionID(connections *sync.Map, otherServers []raft.ServerID, myID raft.ServerID) raft.ServerID {
 	var returnID raft.ServerID = ""
 	(*connections).Range(func(id interface{}, connection interface{}) bool {
+		if len(otherServers) > 0 {
+			if id.(raft.ServerID) != myID {
+				returnID = id.(raft.ServerID)
+				return false
+			}
+			return true
+		}
 		returnID = id.(raft.ServerID)
 		return false
 	})
@@ -53,6 +60,7 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConn
 			if (*response).LeaderID != "" {
 				newConnectionChan <- (*response).LeaderID
 			}
+			time.Sleep(time.Millisecond * 500)
 			// Send again
 			actionChan <- msg
 		} else if msg.Action == engine.CONNECT {
@@ -64,12 +72,15 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConn
 	}
 }
 
-func manageActions(actionChan chan engine.GameLog, connections *sync.Map, connectedChan chan bool) {
-	var currentConnection = getOneConnectionID(connections)
+func manageActions(actionChan chan engine.GameLog, connections *sync.Map, otherServers []raft.ServerID, id raft.ServerID, connectedChan chan bool) {
+	var currentConnection = getOneConnectionID(connections, otherServers, id)
 	newConnectionID := make(chan raft.ServerID)
 	for {
 		select {
 		case msg := <-actionChan:
+			if msg.Action == engine.CONNECT {
+				fmt.Println("Send connection message")
+			}
 			var actionResponse raft.ActionResponse
 			var actionArgs = raft.ActionArgs{msg.Id, msg.Action}
 			var conn, _ = (*connections).Load(currentConnection)
@@ -88,15 +99,6 @@ func addSelfConnection(port string, connections *sync.Map) {
 	(*connections).Store(raft.ServerID(port), client)
 }
 
-func createConnections(conn *sync.Map) *sync.Map {
-	var newConnections sync.Map
-	(*conn).Range(func(id interface{}, connection interface{}) bool {
-		newConnections.Store(id.(raft.ServerID), connection.(*rpc.Client))
-		return true
-	})
-	return &newConnections
-}
-
 func main() {
 	// Seed random number generator
 	rand.Seed(time.Now().UnixNano())
@@ -113,7 +115,7 @@ func main() {
 	intPort, err := strconv.Atoi(port)
 	checkError(err)
 	var playerID = engine.PlayerID(intPort)
-
+	var serverID = raft.ServerID(port)
 	// Get other servers
 	otherServers := make([]raft.ServerID, 0)
 	for i := 3; i < len(args); i++ {
@@ -130,7 +132,7 @@ func main() {
 		var nodeConnections, _ = raft.ConnectToRaftServers(nil, raft.ServerID(port), otherServers)
 		//var nodeConnections = createConnections(conn)
 		//addSelfConnection(port, nodeConnections)
-		go manageActions(uiActionChan, nodeConnections, mainConnectedChan)
+		go manageActions(uiActionChan, nodeConnections, otherServers, serverID, mainConnectedChan)
 		if len(otherServers) > 0 {
 			uiActionChan <- engine.GameLog{playerID, engine.CONNECT, nil}
 			// Wait for the node to be fully connected
