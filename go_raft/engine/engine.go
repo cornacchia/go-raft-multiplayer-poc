@@ -5,6 +5,15 @@ import (
 	"time"
 )
 
+const (
+	UP       int = 0
+	RIGHT    int = 1
+	DOWN     int = 2
+	LEFT     int = 3
+	REGISTER int = 5
+	CONNECT  int = 6
+)
+
 type PlayerID int
 
 type Position struct {
@@ -72,7 +81,7 @@ func applyAction(state *GameState, action GameLog, delta float64) {
 	playerData := (*state).Players[action.Id]
 	var position = playerData.pos
 	switch action.Action {
-	case 0:
+	case UP:
 		// Move FORWARD
 		newX := position.X + (math.Sin(position.A) * playerSpeed * delta)
 		newY := position.Y + (math.Cos(position.A) * playerSpeed * delta)
@@ -82,7 +91,7 @@ func applyAction(state *GameState, action GameLog, delta float64) {
 			position.Y = newY
 		}
 		(*state).Players[action.Id] = PlayerState{position}
-	case 2:
+	case DOWN:
 		// Move BACKWARD
 		newX := position.X - (math.Sin(position.A) * playerSpeed * delta)
 		newY := position.Y - (math.Cos(position.A) * playerSpeed * delta)
@@ -92,17 +101,17 @@ func applyAction(state *GameState, action GameLog, delta float64) {
 			position.Y = newY
 		}
 		(*state).Players[action.Id] = PlayerState{position}
-	case 1:
+	case RIGHT:
 		// Rotate RIGHT
 		newA := position.A + (playerAngularSpeed * delta)
 		position.A = newA
 		(*state).Players[action.Id] = PlayerState{position}
-	case 3:
+	case LEFT:
 		// Rotate LEFT
 		newA := position.A - (playerAngularSpeed * delta)
 		position.A = newA
 		(*state).Players[action.Id] = PlayerState{position}
-	case 5:
+	case REGISTER:
 		// Register new player
 		(*state).Players[action.Id] = PlayerState{Position{2.0, 2.0, 0.0}}
 	}

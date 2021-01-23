@@ -254,7 +254,7 @@ func run(opt *uiOptions) {
 
 		killChan := make(chan bool)
 		go paintScreen(opt, uiScreen, window, killChan)
-		(*opt).actionChan <- engine.GameLog{(*opt).playerID, 5, nil}
+		(*opt).actionChan <- engine.GameLog{(*opt).playerID, engine.REGISTER, nil}
 		for {
 			e := window.NextEvent()
 
@@ -278,13 +278,13 @@ func run(opt *uiOptions) {
 					killChan <- true
 					return
 				} else if e.Code == key.CodeW && e.Direction == key.DirPress {
-					(*opt).actionChan <- engine.GameLog{(*opt).playerID, 0, nil}
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, engine.UP, nil}
 				} else if e.Code == key.CodeA && e.Direction == key.DirPress {
-					(*opt).actionChan <- engine.GameLog{(*opt).playerID, 3, nil}
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, engine.LEFT, nil}
 				} else if e.Code == key.CodeS && e.Direction == key.DirPress {
-					(*opt).actionChan <- engine.GameLog{(*opt).playerID, 2, nil}
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, engine.DOWN, nil}
 				} else if e.Code == key.CodeD && e.Direction == key.DirPress {
-					(*opt).actionChan <- engine.GameLog{(*opt).playerID, 1, nil}
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, engine.RIGHT, nil}
 				}
 			case error:
 				log.Print(e)

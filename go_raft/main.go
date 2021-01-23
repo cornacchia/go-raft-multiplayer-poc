@@ -46,7 +46,7 @@ func getOneConnectionID(connections *sync.Map) raft.ServerID {
 	return returnID
 }
 
-func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConnectionChan chan raft.ServerID, actionChan chan engine.GameLog, msg engine.GameLog) {
+func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConnectionChan chan raft.ServerID, actionChan chan engine.GameLog, msg engine.GameLog, connectedChan chan bool) {
 	select {
 	case <-call.Done:
 		if !(*response).Applied {
@@ -55,6 +55,8 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConn
 			}
 			// Send again
 			actionChan <- msg
+		} else if msg.Action == engine.CONNECT {
+			connectedChan <- true
 		}
 	case <-time.After(time.Millisecond * actionCallTimeout):
 		// Send again
@@ -62,7 +64,7 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConn
 	}
 }
 
-func manageActions(actionChan chan engine.GameLog, connections *sync.Map) {
+func manageActions(actionChan chan engine.GameLog, connections *sync.Map, connectedChan chan bool) {
 	var currentConnection = getOneConnectionID(connections)
 	newConnectionID := make(chan raft.ServerID)
 	for {
@@ -71,8 +73,9 @@ func manageActions(actionChan chan engine.GameLog, connections *sync.Map) {
 			var actionResponse raft.ActionResponse
 			var actionArgs = raft.ActionArgs{msg.Id, msg.Action}
 			var conn, _ = (*connections).Load(currentConnection)
-			actionCall := (*conn.(*rpc.Client)).Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
-			go handleActionResponse(actionCall, &actionResponse, newConnectionID, actionChan, msg)
+			var raftConn = conn.(raft.RaftConnection)
+			actionCall := raftConn.Connection.Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
+			go handleActionResponse(actionCall, &actionResponse, newConnectionID, actionChan, msg, connectedChan)
 		case newLeaderID := <-newConnectionID:
 			currentConnection = newLeaderID
 		}
@@ -119,17 +122,33 @@ func main() {
 
 	if mode == "Client" {
 		// Client mode: UI + Engine + Raft node
+		var mainConnectedChan = make(chan bool)
+		var nodeConnectedChan = make(chan bool)
 		var uiActionChan = make(chan engine.GameLog)
 		var stateReqChan, stateChan, actionChan = engine.Start(playerID)
-		ui.Start(playerID, stateReqChan, stateChan, uiActionChan)
-		var _ = raft.Start(mode, port, otherServers, actionChan)
-		var nodeConnections, _ = raft.ConnectToRaftServers(raft.ServerID(port), otherServers)
+		var _ = raft.Start(mode, port, otherServers, actionChan, nodeConnectedChan)
+		var nodeConnections, _ = raft.ConnectToRaftServers(nil, raft.ServerID(port), otherServers)
 		//var nodeConnections = createConnections(conn)
 		//addSelfConnection(port, nodeConnections)
-		manageActions(uiActionChan, nodeConnections)
-	} else {
-		raft.Start(mode, port, otherServers, nil)
+		go manageActions(uiActionChan, nodeConnections, mainConnectedChan)
+		if len(otherServers) > 0 {
+			uiActionChan <- engine.GameLog{playerID, engine.CONNECT, nil}
+			// Wait for the node to be fully connected
+			<-mainConnectedChan
+			// Notify the raft node
+			nodeConnectedChan <- true
+		}
+		ui.Start(playerID, stateReqChan, stateChan, uiActionChan)
 		for {
+			// TODO: add termination conditions here
+			select {
+			case <-time.After(time.Second * 5):
+			}
+		}
+	} else {
+		raft.Start(mode, port, otherServers, nil, nil)
+		for {
+			// TODO: add termination conditions here
 			select {
 			case <-time.After(time.Second * 5):
 			}
