@@ -49,6 +49,11 @@ type uiOptions struct {
 	actionChan       chan engine.GameLog
 }
 
+type playerPosition struct {
+	spr      int
+	position engine.Position
+}
+
 func checkError(err error) {
 	if err != nil {
 		log.Error("Error: ", err)
@@ -65,18 +70,18 @@ func distance(pos1 engine.Position, pos2 engine.Position) float64 {
 	return math.Sqrt(math.Pow(math.Abs(pos1.X-pos2.X), 2.0) + math.Pow(math.Abs(pos1.Y-pos2.Y), 2.0))
 }
 
-func getOrderedPlayers(state *engine.GameState, playerID engine.PlayerID) []engine.Position {
-	var playerPosition engine.Position
-	var positions []engine.Position
+func getOrderedPlayers(state *engine.GameState, playerID engine.PlayerID) []playerPosition {
+	var myPlayerPosition engine.Position
+	var positions []playerPosition
 	for id, data := range (*state).Players {
 		if id != playerID {
-			positions = append(positions, data.GetPosition())
+			positions = append(positions, playerPosition{data.GetSprite(), data.GetPosition()})
 		} else {
-			playerPosition = data.GetPosition()
+			myPlayerPosition = data.GetPosition()
 		}
 	}
 	sort.Slice(positions, func(i1, i2 int) bool {
-		return distance(positions[i1], playerPosition) >= distance(positions[i2], playerPosition)
+		return distance(positions[i1].position, myPlayerPosition) >= distance(positions[i2].position, myPlayerPosition)
 	})
 	return positions
 }
@@ -184,8 +189,9 @@ func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window, k
 		}
 
 		for _, otherPosition := range otherPlayersPositions {
-			vecX := otherPosition.X - playerPosition.X
-			vecY := otherPosition.Y - playerPosition.Y
+			otherPlayerSprite := "player_" + fmt.Sprint(otherPosition.spr)
+			vecX := otherPosition.position.X - playerPosition.X
+			vecY := otherPosition.position.Y - playerPosition.Y
 			distanceFromPlayer := math.Sqrt(vecX*vecX + vecY*vecY)
 			eyeX := math.Sin(playerPosition.A)
 			eyeY := math.Cos(playerPosition.A)
@@ -205,14 +211,14 @@ func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window, k
 				objectCeiling := screenHeight/2.0 - screenHeight/distanceFromPlayer
 				objectFloor := screenHeight - objectCeiling
 				objectHeight := objectFloor - objectCeiling
-				objectAspectRatio := sprites["player"].height / sprites["player"].width
+				objectAspectRatio := sprites[otherPlayerSprite].height / sprites[otherPlayerSprite].width
 				objectWidth := objectHeight / objectAspectRatio
 				middleOfObject := (0.5*(objectAngle/(fov/2.0)) + 0.5) * screenWidth
 				for lx := 0; lx < int(objectWidth); lx++ {
 					for ly := 0; ly < int(objectHeight); ly++ {
 						sampleX := float64(lx) / objectWidth
 						sampleY := float64(ly) / objectHeight
-						r, g, b, a := getSpritePixel(sampleX, sampleY, sprites["player"])
+						r, g, b, a := getSpritePixel(sampleX, sampleY, sprites[otherPlayerSprite])
 						objectColumn := int(middleOfObject + float64(lx) - (objectWidth / 2.0))
 						if objectColumn >= 0 && objectColumn < screenWidth {
 							if a > 0 && depthBuffer[objectColumn] >= distanceFromPlayer {
@@ -295,7 +301,12 @@ func run(opt *uiOptions) {
 }
 
 func initializeSprites() {
-	sprites["player"] = &sprite{"/assets/player_spritesheet.png", nil, 64, 64}
+	sprites["player_0"] = &sprite{"/assets/player_spritesheet_1.png", nil, 64, 64}
+	sprites["player_1"] = &sprite{"/assets/player_spritesheet_2.png", nil, 64, 64}
+	sprites["player_2"] = &sprite{"/assets/player_spritesheet_3.png", nil, 64, 64}
+	sprites["player_3"] = &sprite{"/assets/player_spritesheet_4.png", nil, 64, 64}
+	sprites["player_4"] = &sprite{"/assets/player_spritesheet_5.png", nil, 64, 64}
+	sprites["player_5"] = &sprite{"/assets/player_spritesheet_6.png", nil, 64, 64}
 }
 
 func loadImages() {

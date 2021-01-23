@@ -2,6 +2,7 @@ package engine
 
 import (
 	"math"
+	"math/rand"
 	"time"
 )
 
@@ -27,6 +28,7 @@ type Position struct {
 }
 
 type PlayerState struct {
+	spr int
 	pos Position
 }
 
@@ -69,6 +71,10 @@ func (playerState *PlayerState) GetPosition() Position {
 	return playerState.pos
 }
 
+func (playerState *PlayerState) GetSprite() int {
+	return playerState.spr
+}
+
 func checkHitWall(x float64, y float64) bool {
 	return GameMap[int(x)][int(y)] == '#'
 }
@@ -91,7 +97,7 @@ func applyAction(state *GameState, action GameLog, delta float64) {
 			position.X = newX
 			position.Y = newY
 		}
-		(*state).Players[action.Id] = PlayerState{position}
+		(*state).Players[action.Id] = PlayerState{(*state).Players[action.Id].spr, position}
 	case DOWN:
 		// Move BACKWARD
 		newX := position.X - (math.Sin(position.A) * playerSpeed * delta)
@@ -101,20 +107,20 @@ func applyAction(state *GameState, action GameLog, delta float64) {
 			position.X = newX
 			position.Y = newY
 		}
-		(*state).Players[action.Id] = PlayerState{position}
+		(*state).Players[action.Id] = PlayerState{(*state).Players[action.Id].spr, position}
 	case RIGHT:
 		// Rotate RIGHT
 		newA := position.A + (playerAngularSpeed * delta)
 		position.A = newA
-		(*state).Players[action.Id] = PlayerState{position}
+		(*state).Players[action.Id] = PlayerState{(*state).Players[action.Id].spr, position}
 	case LEFT:
 		// Rotate LEFT
 		newA := position.A - (playerAngularSpeed * delta)
 		position.A = newA
-		(*state).Players[action.Id] = PlayerState{position}
+		(*state).Players[action.Id] = PlayerState{(*state).Players[action.Id].spr, position}
 	case REGISTER:
 		// Register new player
-		(*state).Players[action.Id] = PlayerState{Position{2.0, 2.0, 0.0}}
+		(*state).Players[action.Id] = PlayerState{rand.Intn(5), Position{2.0, 2.0, 0.0}}
 	}
 
 }

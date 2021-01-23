@@ -473,6 +473,7 @@ func handleLeader(opt *options) {
 }
 
 func applyLog(opt *options, log RaftLog) {
+	// TODO remove player from game if disconnected
 	if (*opt).mode == "Client" && log.Type == Game {
 		(*opt).actionChan <- log.Log
 	}
@@ -489,7 +490,6 @@ func applyLog(opt *options, log RaftLog) {
 			sendAppendEntriesRPCs(opt, (*opt)._state.getAppendEntriesArgs)
 		}
 		if log.Type == Configuration && log.ConfigurationLog.OldCount == 0 {
-			fmt.Println("Apply end of configuration change")
 			log.ConfigurationLog.ChanApplied <- true
 			(*opt)._state.removeNewServerResponseChan(log.ConfigurationLog.Id)
 		}
