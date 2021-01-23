@@ -6,12 +6,13 @@ import (
 )
 
 const (
-	UP       int = 0
-	RIGHT    int = 1
-	DOWN     int = 2
-	LEFT     int = 3
-	REGISTER int = 5
-	CONNECT  int = 6
+	UP         int = 0
+	RIGHT      int = 1
+	DOWN       int = 2
+	LEFT       int = 3
+	REGISTER   int = 5
+	CONNECT    int = 6
+	DISCONNECT int = 7
 )
 
 type PlayerID int

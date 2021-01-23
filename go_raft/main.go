@@ -7,8 +7,10 @@ import (
 	"math/rand"
 	"net/rpc"
 	"os"
+	"os/signal"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -54,7 +56,7 @@ func getOneConnectionID(connections *sync.Map, otherServers []raft.ServerID, myI
 	return returnID
 }
 
-func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConnectionChan chan raft.ServerID, actionChan chan engine.GameLog, msg engine.GameLog, connectedChan chan bool) {
+func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConnectionChan chan raft.ServerID, actionChan chan engine.GameLog, msg engine.GameLog, connectedChan chan bool, disconnectedChan chan bool) {
 	select {
 	case <-call.Done:
 		if !(*response).Applied {
@@ -66,6 +68,8 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConn
 			actionChan <- msg
 		} else if msg.Action == engine.CONNECT {
 			connectedChan <- true
+		} else if msg.Action == engine.DISCONNECT {
+			disconnectedChan <- true
 		}
 	case <-time.After(time.Millisecond * actionCallTimeout):
 		// Send again
@@ -73,7 +77,7 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConn
 	}
 }
 
-func manageActions(actionChan chan engine.GameLog, connections *sync.Map, otherServers []raft.ServerID, id raft.ServerID, connectedChan chan bool) {
+func manageActions(actionChan chan engine.GameLog, connections *sync.Map, otherServers []raft.ServerID, id raft.ServerID, connectedChan chan bool, disconnectedChan chan bool) {
 	var currentConnection = getOneConnectionID(connections, otherServers, id)
 	newConnectionID := make(chan raft.ServerID)
 	for {
@@ -84,7 +88,7 @@ func manageActions(actionChan chan engine.GameLog, connections *sync.Map, otherS
 			var conn, _ = (*connections).Load(currentConnection)
 			var raftConn = conn.(raft.RaftConnection)
 			actionCall := raftConn.Connection.Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
-			go handleActionResponse(actionCall, &actionResponse, newConnectionID, actionChan, msg, connectedChan)
+			go handleActionResponse(actionCall, &actionResponse, newConnectionID, actionChan, msg, connectedChan, disconnectedChan)
 		case newLeaderID := <-newConnectionID:
 			currentConnection = newLeaderID
 		}
@@ -100,8 +104,10 @@ func addSelfConnection(port string, connections *sync.Map) {
 func main() {
 	// Seed random number generator
 	rand.Seed(time.Now().UnixNano())
-	log.SetLevel(log.InfoLevel)
+	log.SetLevel(log.DebugLevel)
 
+	termChan := make(chan os.Signal)
+	signal.Notify(termChan, syscall.SIGTERM, syscall.SIGINT)
 	// Command line arguments
 	args := os.Args
 	if len(args) < 3 {
@@ -123,6 +129,7 @@ func main() {
 	if mode == "Client" {
 		// Client mode: UI + Engine + Raft node
 		var mainConnectedChan = make(chan bool)
+		var mainDisconnectedChan = make(chan bool)
 		var nodeConnectedChan = make(chan bool)
 		var uiActionChan = make(chan engine.GameLog)
 		var stateReqChan, stateChan, actionChan = engine.Start(playerID)
@@ -130,7 +137,7 @@ func main() {
 		var nodeConnections, _ = raft.ConnectToRaftServers(nil, raft.ServerID(port), otherServers)
 		//var nodeConnections = createConnections(conn)
 		//addSelfConnection(port, nodeConnections)
-		go manageActions(uiActionChan, nodeConnections, otherServers, serverID, mainConnectedChan)
+		go manageActions(uiActionChan, nodeConnections, otherServers, serverID, mainConnectedChan, mainDisconnectedChan)
 		if len(otherServers) > 0 {
 			uiActionChan <- engine.GameLog{playerID, engine.CONNECT, nil}
 			// Wait for the node to be fully connected
@@ -139,19 +146,17 @@ func main() {
 			nodeConnectedChan <- true
 		}
 		ui.Start(playerID, stateReqChan, stateChan, uiActionChan)
-		for {
-			// TODO: add termination conditions here
-			select {
-			case <-time.After(time.Second * 5):
-			}
+		<-termChan
+		log.Info("Shutting down...")
+		uiActionChan <- engine.GameLog{playerID, engine.DISCONNECT, nil}
+		select {
+		case <-mainDisconnectedChan:
+		case <-time.After(time.Millisecond * 5000):
 		}
+
 	} else {
 		raft.Start(mode, port, otherServers, nil, nil)
-		for {
-			// TODO: add termination conditions here
-			select {
-			case <-time.After(time.Second * 5):
-			}
-		}
+		<-termChan
+		log.Info("Shutting down...")
 	}
 }

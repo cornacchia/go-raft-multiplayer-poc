@@ -339,46 +339,69 @@ func handleResponseToMessage(opt *options, chanApplied chan bool, chanResponse c
 	}
 }
 
-func startConfigurationChange(opt *options, newID ServerID) (map[ServerID][2]bool, int, int) {
+func startConfigurationChange(opt *options, newID ServerID, add bool) (map[ServerID][2]bool, int, int) {
 	log.Debug("Start configuration change")
 	var newCount = 0
 	var oldCount = 0
 	var connectionMap = map[ServerID][2]bool{}
 	// Remove new connection from unvoting connection list
-	var newConnection, _ = (*(*opt).unvotingConnections).LoadAndDelete(newID)
+	var newConnection RaftConnection
+	if add {
+		var conn, _ = (*(*opt).unvotingConnections).LoadAndDelete(newID)
+		newConnection = conn.(RaftConnection)
+	}
+
 	// Mark all previous connections as OLD, NEW
 	(*(*opt).connections).Range(func(id interface{}, connection interface{}) bool {
+		var connID = id.(ServerID)
 		var conn = connection.(RaftConnection)
+		// If we are removing the connection don't mark it as NEW
+		if add || connID != newID {
+			conn.new = true
+			newCount++
+		} else {
+			conn.new = false
+		}
 		conn.old = true
-		conn.new = true
-		(*(*opt).connections).Store(id, conn)
-		newCount++
 		oldCount++
-		connectionMap[id.(ServerID)] = [2]bool{true, true}
+		(*(*opt).connections).Store(id, conn)
+		connectionMap[id.(ServerID)] = [2]bool{conn.old, conn.new}
 		return true
 	})
-	// Mark new connection as NEW
-	(*(*opt).connections).Store(newID, RaftConnection{newConnection.(RaftConnection).Connection, false, true})
-	connectionMap[newID] = [2]bool{false, true}
-	oldCount++
+	if add {
+		// Mark new connection as NEW
+		(*(*opt).connections).Store(newID, RaftConnection{newConnection.Connection, false, true})
+		connectionMap[newID] = [2]bool{false, true}
+		newCount++
+	}
+
 	return connectionMap, oldCount, newCount
 }
 
-func finishConfigurationChange(opt *options) (map[ServerID][2]bool, int) {
+func finishConfigurationChange(opt *options, add bool) (map[ServerID][2]bool, int) {
 	log.Debug("Finish configuration change")
 	var newCount = 0
 	var connectionMap = map[ServerID][2]bool{}
+	var connectionsToRemove = []ServerID{}
 	// Remove new connection from unvoting connection list
 	// Mark all connections as NEW
 	(*(*opt).connections).Range(func(id interface{}, connection interface{}) bool {
 		var conn = connection.(RaftConnection)
-		conn.old = false
-		conn.new = true
-		(*(*opt).connections).Store(id, conn)
-		newCount++
-		connectionMap[id.(ServerID)] = [2]bool{false, true}
+		if conn.new {
+			conn.old = false
+			connectionMap[id.(ServerID)] = [2]bool{false, true}
+			newCount++
+			(*(*opt).connections).Store(id, conn)
+		} else {
+			connectionsToRemove = append(connectionsToRemove, id.(ServerID))
+		}
 		return true
 	})
+
+	for _, id := range connectionsToRemove {
+		log.Debug("Remove connection: " + id)
+		var _, _ = (*(*opt).connections).LoadAndDelete(id)
+	}
 	return connectionMap, newCount
 }
 
@@ -394,6 +417,7 @@ func handleLeader(opt *options) {
 	case act := <-(*opt).msgChan:
 		//fmt.Println("### Leader: receive action message")
 		if act.Msg.Action == engine.CONNECT {
+			log.Debug("Received request to connect")
 			// Connect to new node and add it to the unvotingConnections map
 			responseChan := make(chan *raftConnectionResponse)
 			go connectToRaftServer(opt, convertID(act.Msg.Id), responseChan)
@@ -403,6 +427,13 @@ func handleLeader(opt *options) {
 			(*opt)._state.updateServerConfiguration((*resp).id, [2]bool{false, false})
 			// TODO this should be removed eventually
 			(*opt)._state.updateNewServerResponseChans((*resp).id, act.Msg.ChanApplied)
+			go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
+		} else if act.Msg.Action == engine.DISCONNECT {
+			log.Debug("Received request to disconnect")
+			connMap, oldCount, newCount := startConfigurationChange(opt, convertID(act.Msg.Id), false)
+			(*opt)._state.addNewConfigurationLog(ConfigurationLog{convertID(act.Msg.Id), connMap, oldCount, newCount, nil})
+			(*opt)._state.updateNewServerResponseChans(convertID(act.Msg.Id), act.Msg.ChanApplied)
+			sendAppendEntriesRPCs(opt, (*opt)._state.getAppendEntriesArgs)
 			go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
 		} else {
 			// Handle player game action (i.e. movement)
@@ -417,7 +448,7 @@ func handleLeader(opt *options) {
 		// Check if unvoting member should be promoted to voting
 		var _, found = (*opt).unvotingConnections.Load((*appendEntriesResponse).Id)
 		if found && matchIndex == (*opt)._state.getCommitIndex() {
-			connMap, oldCount, newCount := startConfigurationChange(opt, (*appendEntriesResponse).Id)
+			connMap, oldCount, newCount := startConfigurationChange(opt, (*appendEntriesResponse).Id, true)
 			(*opt)._state.addNewConfigurationLog(ConfigurationLog{(*appendEntriesResponse).Id, connMap, oldCount, newCount, nil})
 			sendAppendEntriesRPCs(opt, (*opt)._state.getAppendEntriesArgs)
 		}
@@ -451,12 +482,14 @@ func applyLog(opt *options, log RaftLog) {
 		}
 		// If a configuration change log is committed (OLD, NEW configuration), generate its closure
 		if log.Type == Configuration && log.ConfigurationLog.OldCount > 0 {
-			connMap, newCount := finishConfigurationChange(opt)
+			var add = log.ConfigurationLog.OldCount < log.ConfigurationLog.NewCount
+			connMap, newCount := finishConfigurationChange(opt, add)
 			var appliedChan = (*opt)._state.getNewServerResponseChan(log.ConfigurationLog.Id)
 			(*opt)._state.addNewConfigurationLog(ConfigurationLog{log.ConfigurationLog.Id, connMap, 0, newCount, appliedChan})
 			sendAppendEntriesRPCs(opt, (*opt)._state.getAppendEntriesArgs)
 		}
 		if log.Type == Configuration && log.ConfigurationLog.OldCount == 0 {
+			fmt.Println("Apply end of configuration change")
 			log.ConfigurationLog.ChanApplied <- true
 			(*opt)._state.removeNewServerResponseChan(log.ConfigurationLog.Id)
 		}
