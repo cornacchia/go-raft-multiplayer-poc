@@ -126,37 +126,41 @@ func main() {
 		otherServers = append(otherServers, raft.ServerID(args[i]))
 	}
 
-	if mode == "Client" {
-		// Client mode: UI + Engine + Raft node
-		var mainConnectedChan = make(chan bool)
-		var mainDisconnectedChan = make(chan bool)
-		var nodeConnectedChan = make(chan bool)
-		var uiActionChan = make(chan engine.GameLog)
-		var stateReqChan, stateChan, actionChan = engine.Start(playerID)
-		var _ = raft.Start(mode, port, otherServers, actionChan, nodeConnectedChan)
-		var nodeConnections, _ = raft.ConnectToRaftServers(nil, raft.ServerID(port), otherServers)
-		//var nodeConnections = createConnections(conn)
-		//addSelfConnection(port, nodeConnections)
-		go manageActions(uiActionChan, nodeConnections, otherServers, serverID, mainConnectedChan, mainDisconnectedChan)
-		if len(otherServers) > 0 {
-			uiActionChan <- engine.GameLog{playerID, engine.CONNECT, nil}
-			// Wait for the node to be fully connected
-			<-mainConnectedChan
-			// Notify the raft node
-			nodeConnectedChan <- true
-		}
-		ui.Start(playerID, stateReqChan, stateChan, uiActionChan)
-		<-termChan
-		log.Info("Shutting down...")
-		uiActionChan <- engine.GameLog{playerID, engine.DISCONNECT, nil}
-		select {
-		case <-mainDisconnectedChan:
-		case <-time.After(time.Millisecond * 5000):
-		}
+	// Client mode: UI + Engine + Raft node
+	var mainConnectedChan = make(chan bool)
+	var mainDisconnectedChan = make(chan bool)
+	var nodeConnectedChan = make(chan bool)
+	var uiActionChan = make(chan engine.GameLog)
+	var stateReqChan chan bool
+	var stateChan chan engine.GameState
+	var actionChan chan engine.GameLog
 
-	} else {
-		raft.Start(mode, port, otherServers, nil, nil)
-		<-termChan
-		log.Info("Shutting down...")
+	if mode == "Client" {
+		stateReqChan, stateChan, actionChan = engine.Start(playerID)
+	}
+
+	var _ = raft.Start(mode, port, otherServers, actionChan, nodeConnectedChan)
+	var nodeConnections, _ = raft.ConnectToRaftServers(nil, raft.ServerID(port), otherServers)
+
+	go manageActions(uiActionChan, nodeConnections, otherServers, serverID, mainConnectedChan, mainDisconnectedChan)
+
+	if len(otherServers) > 0 {
+		uiActionChan <- engine.GameLog{playerID, engine.CONNECT, nil}
+		// Wait for the node to be fully connected
+		<-mainConnectedChan
+		// Notify the raft node
+		nodeConnectedChan <- true
+	}
+
+	if mode == "Client" {
+		ui.Start(playerID, stateReqChan, stateChan, uiActionChan)
+	}
+
+	<-termChan
+	log.Info("Shutting down...")
+	uiActionChan <- engine.GameLog{playerID, engine.DISCONNECT, nil}
+	select {
+	case <-mainDisconnectedChan:
+	case <-time.After(time.Millisecond * 5000):
 	}
 }
