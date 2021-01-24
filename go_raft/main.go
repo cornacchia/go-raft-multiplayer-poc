@@ -18,19 +18,14 @@ import (
 
 const actionCallTimeout = 500
 
-/*
-Configuration change (preparation):
-	* The node joins as a non voting member
-	* Logs are replicated but it is not taken in consideration for votes
-	* Once it catches up the second phase starts
-Configuration change:
-	* The leader receives notice of a new node (e.g. new client)
-	* It stores the configuration for joint consensus Cold,new as a log entry
-	* Once a follower receives that entry it uses it for new decisions
-	* Once Cold,new has been committed the server can create an entry with Cnew
-If the leader is not part of the next configuration:
-	* It steps down after having committed the relative log
-*/
+type options struct {
+	actionChan       chan engine.GameLog
+	connections      *sync.Map
+	otherServers     []raft.ServerID
+	id               raft.ServerID
+	connectedChan    chan bool
+	disconnectedChan chan bool
+}
 
 func checkError(err error) {
 	if err != nil {
@@ -39,11 +34,11 @@ func checkError(err error) {
 }
 
 // Returns an arbitrary connection id from the map
-func getOneConnectionID(connections *sync.Map, otherServers []raft.ServerID, myID raft.ServerID) raft.ServerID {
+func getOneConnectionID(opt *options) raft.ServerID {
 	var returnID raft.ServerID = ""
-	(*connections).Range(func(id interface{}, connection interface{}) bool {
-		if len(otherServers) > 0 {
-			if id.(raft.ServerID) != myID {
+	(*(*opt).connections).Range(func(id interface{}, connection interface{}) bool {
+		if len((*opt).otherServers) > 0 {
+			if id.(raft.ServerID) != (*opt).id {
 				returnID = id.(raft.ServerID)
 				return false
 			}
@@ -56,49 +51,56 @@ func getOneConnectionID(connections *sync.Map, otherServers []raft.ServerID, myI
 	return returnID
 }
 
-func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConnectionChan chan raft.ServerID, actionChan chan engine.GameLog, msg engine.GameLog, connectedChan chan bool, disconnectedChan chan bool) {
+func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConnectionChan chan raft.ServerID, msg engine.GameLog, opt *options) {
 	select {
 	case <-call.Done:
 		if !(*response).Applied {
 			if (*response).LeaderID != "" {
 				newConnectionChan <- (*response).LeaderID
+			} else {
+				newConnectionChan <- (*opt).id
 			}
 			time.Sleep(time.Millisecond * 500)
+			// TODO se non risponde entro un tot cambia leader ID
 			// Send again
-			actionChan <- msg
+			(*opt).actionChan <- msg
 		} else if msg.Action == engine.CONNECT {
-			connectedChan <- true
+			(*opt).connectedChan <- true
 		} else if msg.Action == engine.DISCONNECT {
-			disconnectedChan <- true
+			(*opt).disconnectedChan <- true
 		}
 	case <-time.After(time.Millisecond * actionCallTimeout):
 		// Send again
-		actionChan <- msg
+		newConnectionChan <- (*opt).id
+		(*opt).actionChan <- msg
 	}
 }
 
-func manageActions(actionChan chan engine.GameLog, connections *sync.Map, otherServers []raft.ServerID, id raft.ServerID, connectedChan chan bool, disconnectedChan chan bool) {
-	var currentConnection = getOneConnectionID(connections, otherServers, id)
+func manageActions(opt *options) {
+	var currentConnection = getOneConnectionID(opt)
 	newConnectionID := make(chan raft.ServerID)
 	for {
 		select {
-		case msg := <-actionChan:
+		case msg := <-(*opt).actionChan:
 			var actionResponse raft.ActionResponse
 			var actionArgs = raft.ActionArgs{msg.Id, msg.Action}
-			var conn, _ = (*connections).Load(currentConnection)
+			var conn, _ = (*(*opt).connections).Load(currentConnection)
 			var raftConn = conn.(raft.RaftConnection)
 			actionCall := raftConn.Connection.Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
-			go handleActionResponse(actionCall, &actionResponse, newConnectionID, actionChan, msg, connectedChan, disconnectedChan)
+			go handleActionResponse(actionCall, &actionResponse, newConnectionID, msg, opt)
 		case newLeaderID := <-newConnectionID:
+			log.Trace("Main: New leader id ", newLeaderID)
 			currentConnection = newLeaderID
+			var _, found = (*(*opt).connections).Load(currentConnection)
+			if !found {
+				resultChan := make(chan *raft.RaftConnectionResponse)
+				go raft.ConnectToRaftServer(nil, currentConnection, resultChan)
+				var resp = <-resultChan
+				var newConnection = raft.RaftConnection{(*resp).Connection, false, true}
+				(*(*opt).connections).Store((*resp).Id, newConnection)
+			}
 		}
 	}
-}
-
-func addSelfConnection(port string, connections *sync.Map) {
-	client, err := rpc.DialHTTP("tcp", "127.0.0.1:"+string(port))
-	checkError(err)
-	(*connections).Store(raft.ServerID(port), client)
 }
 
 func main() {
@@ -142,7 +144,14 @@ func main() {
 	var _ = raft.Start(mode, port, otherServers, actionChan, nodeConnectedChan)
 	var nodeConnections, _ = raft.ConnectToRaftServers(nil, raft.ServerID(port), otherServers)
 
-	go manageActions(uiActionChan, nodeConnections, otherServers, serverID, mainConnectedChan, mainDisconnectedChan)
+	var opt = options{
+		uiActionChan,
+		nodeConnections,
+		otherServers,
+		serverID,
+		mainConnectedChan,
+		mainDisconnectedChan}
+	go manageActions(&opt)
 
 	if len(otherServers) > 0 {
 		uiActionChan <- engine.GameLog{playerID, engine.CONNECT, nil}
@@ -161,6 +170,6 @@ func main() {
 	uiActionChan <- engine.GameLog{playerID, engine.DISCONNECT, nil}
 	select {
 	case <-mainDisconnectedChan:
-	case <-time.After(time.Millisecond * 5000):
+	case <-time.After(time.Millisecond * 2000):
 	}
 }

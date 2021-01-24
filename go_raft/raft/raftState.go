@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"go_raft/engine"
 	"math"
 	"math/rand"
@@ -142,6 +143,7 @@ type state interface {
 	getID() ServerID
 	getCommitIndex() int
 	addNewServer(ServerID)
+	removeServer(ServerID)
 	updateServerConfiguration(ServerID, [2]bool)
 	updateNewServerResponseChans(ServerID, chan bool)
 	removeNewServerResponseChan(ServerID)
@@ -233,7 +235,6 @@ func (_state *stateImpl) getElectionTimer() *time.Timer {
 func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new bool) (int, int) {
 	// If the node's current state is stale immediately revert to Follower state
 	if (*resp).Term > (_state.currentTerm) {
-		// fmt.Println(_state.id, " become Follower")
 		_state.stopElectionTimeout()
 		_state.currentElectionVotesNew = 0
 		_state.currentElectionVotesOld = 0
@@ -262,6 +263,8 @@ func (_state *stateImpl) winElection() {
 	for id := range _state.nextIndex {
 		_state.nextIndex[id] = lastLog.Idx + 1
 	}
+	_state.matchIndex[_state.id] = lastLog.Idx
+	_state.lastSentLogIndex[_state.id] = lastLog.Idx
 }
 
 func (_state *stateImpl) prepareAppendEntriesArgs(lastLogIdx int, lastLogTerm int, logsToSend []RaftLog) *AppendEntriesArgs {
@@ -298,6 +301,8 @@ func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
 	// Keep track of the last log actually sent to a follower
 	if len(logsToSend) > 0 {
 		_state.lastSentLogIndex[id] = logsToSend[len(logsToSend)-1].Idx
+	} else {
+		_state.lastSentLogIndex[id] = serverNextIdx - 1
 	}
 	return _state.prepareAppendEntriesArgs(lastLogIdx, lastLogTerm, logsToSend)
 }
@@ -306,12 +311,18 @@ func (_state *stateImpl) addNewGameLog(msg engine.GameLog) {
 	var lastLog = _state.logs[len(_state.logs)-1]
 	var newLog = newGameRaftLog(lastLog.Idx+1, _state.currentTerm, msg)
 	_state.logs = append(_state.logs, newLog)
+	_state.matchIndex[_state.id] = newLog.Idx
+	_state.lastSentLogIndex[_state.id] = newLog.Idx
+	_state.nextIndex[_state.id] = newLog.Idx + 1
 }
 
 func (_state *stateImpl) addNewConfigurationLog(conf ConfigurationLog) {
 	var lastLog = _state.logs[len(_state.logs)-1]
 	var newLog = newConfigurationRaftLog(lastLog.Idx+1, _state.currentTerm, conf)
 	_state.logs = append(_state.logs, newLog)
+	_state.matchIndex[_state.id] = newLog.Idx
+	_state.lastSentLogIndex[_state.id] = newLog.Idx
+	_state.nextIndex[_state.id] = newLog.Idx + 1
 }
 
 func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntriesResponse {
@@ -374,7 +385,6 @@ func (_state *stateImpl) handleAppendEntriesResponse(aer *AppendEntriesResponse)
 	}
 	_state.nextIndex[(*aer).Id] = _state.lastSentLogIndex[(*aer).Id] + 1
 	_state.matchIndex[(*aer).Id] = _state.lastSentLogIndex[(*aer).Id]
-
 	return _state.matchIndex[(*aer).Id]
 }
 
@@ -393,11 +403,11 @@ func (_state *stateImpl) getLog(i int) RaftLog {
 
 func checkMajority(_state *stateImpl, newCount int, oldCount int) bool {
 	var oldMajority = true
-	var newMajority = newCount >= ((*_state).newServerCount+1)/2
+	var newMajority = newCount > ((*_state).newServerCount)/2
 	if (*_state).oldServerCount > 0 {
-		oldMajority = oldCount >= ((*_state).oldServerCount+1)/2
+		oldMajority = oldCount > ((*_state).oldServerCount)/2
 	}
-	// fmt.Println(newCount, " ", oldCount, " ", (*_state).newServerCount, " ", (*_state).oldServerCount)
+	log.Trace(fmt.Sprintf("State check majority: new %d/%d, old %d/%d", newCount, (*_state).newServerCount, oldCount, (*_state).oldServerCount))
 	return newMajority && oldMajority
 }
 
@@ -408,8 +418,9 @@ func (_state *stateImpl) checkCommits() {
 	var bound = false
 	for i := len(_state.logs) - 1; !bound && i >= 0; i-- {
 		// i > commitIndex
-		if _state.logs[i].Idx <= _state.commitIndex+1 {
+		if _state.logs[i].Idx <= _state.commitIndex {
 			bound = true
+			continue
 		}
 		// A majority of matchIndex[j] >= i
 		var replicatedFollowersNew = 0
@@ -428,6 +439,7 @@ func (_state *stateImpl) checkCommits() {
 		if checkMajority(_state, replicatedFollowersNew, replicatedFollowersOld) {
 			// log[i].term == currentTerm
 			if _state.logs[i].Term == _state.currentTerm {
+				log.Trace("New commit index: ", _state.logs[i].Idx)
 				_state.commitIndex = _state.logs[i].Idx
 			}
 		}
@@ -452,20 +464,33 @@ func (_state *stateImpl) addNewServer(sid ServerID) {
 	_state.matchIndex[sid] = 0
 }
 
+func (_state *stateImpl) removeServer(sid ServerID) {
+	delete(_state.lastSentLogIndex, sid)
+	delete(_state.nextIndex, sid)
+	delete(_state.matchIndex, sid)
+	if _state.serverConfiguration[sid][0] {
+		_state.oldServerCount--
+	}
+	if _state.serverConfiguration[sid][1] {
+		_state.newServerCount--
+	}
+	delete(_state.serverConfiguration, sid)
+}
+
 func (_state *stateImpl) updateServerConfiguration(sid ServerID, conf [2]bool) {
-	if sid != _state.id {
-		_state.serverConfiguration[sid] = conf
-		_state.newServerCount = 0
-		_state.oldServerCount = 0
-		for _, conf := range _state.serverConfiguration {
-			if conf[0] {
-				_state.oldServerCount++
-			}
-			if conf[1] {
-				_state.newServerCount++
-			}
+	_state.serverConfiguration[sid] = conf
+	_state.newServerCount = 0
+	_state.oldServerCount = 0
+	for _, conf := range _state.serverConfiguration {
+		if conf[0] {
+			_state.oldServerCount++
+		}
+		if conf[1] {
+			_state.newServerCount++
 		}
 	}
+	log.Debug("State: Update server configuration ", _state.serverConfiguration)
+	log.Debug(fmt.Sprintf("State: new: %d, old: %d", _state.newServerCount, _state.oldServerCount))
 }
 
 func (_state *stateImpl) updateNewServerResponseChans(id ServerID, channel chan bool) {
