@@ -5,6 +5,7 @@ import (
 	"go_raft/engine"
 	"math"
 	"math/rand"
+	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -76,6 +77,7 @@ type stateImpl struct {
 	newServerCount        int
 	oldServerCount        int
 	newServerResponseChan map[ServerID]chan bool
+	lock                  *sync.Mutex
 }
 
 func newGameRaftLog(idx int, term int, log engine.GameLog) RaftLog {
@@ -95,6 +97,7 @@ func newState(id string, otherStates []ServerID) *stateImpl {
 	var matchIndex = make(map[ServerID]int)
 	var serverConfiguration = make(map[ServerID][2]bool)
 	var newServerResponseChan = make(map[ServerID]chan bool)
+	var lock = &sync.Mutex{}
 	return &stateImpl{
 		ServerID(id),
 		false,
@@ -114,7 +117,8 @@ func newState(id string, otherStates []ServerID) *stateImpl {
 		serverConfiguration,
 		0,
 		0,
-		newServerResponseChan}
+		newServerResponseChan,
+		lock}
 }
 
 // TODO probably lock state before writing to it
@@ -254,6 +258,7 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new
 }
 
 func (_state *stateImpl) winElection() {
+	_state.lock.Lock()
 	log.Debug("Become Leader")
 	var lastLog = _state.logs[len(_state.logs)-1]
 	_state.currentElectionVotesOld = 0
@@ -265,6 +270,7 @@ func (_state *stateImpl) winElection() {
 	}
 	_state.matchIndex[_state.id] = lastLog.Idx
 	_state.lastSentLogIndex[_state.id] = lastLog.Idx
+	_state.lock.Unlock()
 }
 
 func (_state *stateImpl) prepareAppendEntriesArgs(lastLogIdx int, lastLogTerm int, logsToSend []RaftLog) *AppendEntriesArgs {
@@ -289,6 +295,7 @@ func (_state *stateImpl) prepareHearthBeat(id ServerID) *AppendEntriesArgs {
 }
 
 func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
+	_state.lock.Lock()
 	var serverNextIdx = _state.nextIndex[id]
 	var logsToSend = _state.logs[serverNextIdx:]
 	var lastLogIdx = 0
@@ -304,25 +311,30 @@ func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
 	} else {
 		_state.lastSentLogIndex[id] = serverNextIdx - 1
 	}
+	_state.lock.Unlock()
 	return _state.prepareAppendEntriesArgs(lastLogIdx, lastLogTerm, logsToSend)
 }
 
 func (_state *stateImpl) addNewGameLog(msg engine.GameLog) {
+	_state.lock.Lock()
 	var lastLog = _state.logs[len(_state.logs)-1]
 	var newLog = newGameRaftLog(lastLog.Idx+1, _state.currentTerm, msg)
 	_state.logs = append(_state.logs, newLog)
 	_state.matchIndex[_state.id] = newLog.Idx
 	_state.lastSentLogIndex[_state.id] = newLog.Idx
 	_state.nextIndex[_state.id] = newLog.Idx + 1
+	_state.lock.Unlock()
 }
 
 func (_state *stateImpl) addNewConfigurationLog(conf ConfigurationLog) {
+	_state.lock.Lock()
 	var lastLog = _state.logs[len(_state.logs)-1]
 	var newLog = newConfigurationRaftLog(lastLog.Idx+1, _state.currentTerm, conf)
 	_state.logs = append(_state.logs, newLog)
 	_state.matchIndex[_state.id] = newLog.Idx
 	_state.lastSentLogIndex[_state.id] = newLog.Idx
 	_state.nextIndex[_state.id] = newLog.Idx + 1
+	_state.lock.Unlock()
 }
 
 func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntriesResponse {
@@ -378,6 +390,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 }
 
 func (_state *stateImpl) handleAppendEntriesResponse(aer *AppendEntriesResponse) int {
+	_state.lock.Lock()
 	// TODO check if follower actually present
 	if !(*aer).Success && _state.nextIndex[(*aer).Id] > 0 {
 		_state.nextIndex[(*aer).Id]--
@@ -385,6 +398,7 @@ func (_state *stateImpl) handleAppendEntriesResponse(aer *AppendEntriesResponse)
 	}
 	_state.nextIndex[(*aer).Id] = _state.lastSentLogIndex[(*aer).Id] + 1
 	_state.matchIndex[(*aer).Id] = _state.lastSentLogIndex[(*aer).Id]
+	_state.lock.Unlock()
 	return _state.matchIndex[(*aer).Id]
 }
 
@@ -412,6 +426,7 @@ func checkMajority(_state *stateImpl, newCount int, oldCount int) bool {
 }
 
 func (_state *stateImpl) checkCommits() {
+	_state.lock.Lock()
 	if len(_state.logs) < 1 {
 		return
 	}
@@ -444,6 +459,7 @@ func (_state *stateImpl) checkCommits() {
 			}
 		}
 	}
+	_state.lock.Unlock()
 }
 
 func (_state *stateImpl) getCurrentLeader() ServerID {
@@ -459,12 +475,15 @@ func (_state *stateImpl) getCommitIndex() int {
 }
 
 func (_state *stateImpl) addNewServer(sid ServerID) {
+	_state.lock.Lock()
 	_state.lastSentLogIndex[sid] = 0
 	_state.nextIndex[sid] = 0
 	_state.matchIndex[sid] = 0
+	_state.lock.Unlock()
 }
 
 func (_state *stateImpl) removeServer(sid ServerID) {
+	_state.lock.Lock()
 	delete(_state.lastSentLogIndex, sid)
 	delete(_state.nextIndex, sid)
 	delete(_state.matchIndex, sid)
@@ -475,9 +494,11 @@ func (_state *stateImpl) removeServer(sid ServerID) {
 		_state.newServerCount--
 	}
 	delete(_state.serverConfiguration, sid)
+	_state.lock.Unlock()
 }
 
 func (_state *stateImpl) updateServerConfiguration(sid ServerID, conf [2]bool) {
+	_state.lock.Lock()
 	_state.serverConfiguration[sid] = conf
 	_state.newServerCount = 0
 	_state.oldServerCount = 0
@@ -491,14 +512,19 @@ func (_state *stateImpl) updateServerConfiguration(sid ServerID, conf [2]bool) {
 	}
 	log.Debug("State: Update server configuration ", _state.serverConfiguration)
 	log.Debug(fmt.Sprintf("State: new: %d, old: %d", _state.newServerCount, _state.oldServerCount))
+	_state.lock.Unlock()
 }
 
 func (_state *stateImpl) updateNewServerResponseChans(id ServerID, channel chan bool) {
+	_state.lock.Lock()
 	_state.newServerResponseChan[id] = channel
+	_state.lock.Unlock()
 }
 
 func (_state *stateImpl) removeNewServerResponseChan(id ServerID) {
+	_state.lock.Lock()
 	delete(_state.newServerResponseChan, id)
+	_state.lock.Unlock()
 }
 
 func (_state *stateImpl) getNewServerResponseChan(id ServerID) chan bool {
