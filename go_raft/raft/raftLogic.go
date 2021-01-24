@@ -194,6 +194,7 @@ func checkNewConfigurations(opt *options, appEntrArgs *AppendEntriesArgs) {
 					conn.New = state[1]
 					// Check if node has been removed
 					if conn.Old && !conn.New {
+						log.Debug("Disconnected:", id)
 						(*(*opt).connections).LoadAndDelete(id)
 						(*opt)._state.removeServer(id)
 					} else {
@@ -205,7 +206,7 @@ func checkNewConfigurations(opt *options, appEntrArgs *AppendEntriesArgs) {
 					go ConnectToRaftServer(opt, id, responseChan)
 					resp := <-responseChan
 					var newConnection = RaftConnection{(*resp).Connection, false, true}
-					(*opt)._state.updateServerConfiguration((*resp).Id, [2]bool{false, true})
+					(*opt)._state.updateServerConfiguration(id, [2]bool{false, true})
 					(*(*opt).connections).Store(id, newConnection)
 				}
 			}
@@ -463,7 +464,7 @@ func handleLeader(opt *options) {
 		var matchIndex = (*opt)._state.handleAppendEntriesResponse(appendEntriesResponse)
 		// Check if unvoting member should be promoted to voting
 		var _, found = (*opt).unvotingConnections.Load((*appendEntriesResponse).Id)
-		if found && matchIndex == (*opt)._state.getCommitIndex() {
+		if found && matchIndex >= (*opt)._state.getCommitIndex() {
 			(*opt)._state.updateServerConfiguration((*appendEntriesResponse).Id, [2]bool{false, true})
 			connMap, oldCount, newCount := startConfigurationChange(opt, (*appendEntriesResponse).Id, true)
 			(*opt)._state.addNewConfigurationLog(ConfigurationLog{(*appendEntriesResponse).Id, connMap, oldCount, newCount, nil})
