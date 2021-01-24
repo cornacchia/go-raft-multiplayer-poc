@@ -177,11 +177,12 @@ func countConnections(opt *options) int {
 }
 
 func checkNewConfigurations(opt *options, appEntrArgs *AppendEntriesArgs) {
-	for _, log := range (*appEntrArgs).Entries {
-		if log.Type == Configuration {
-			(*opt).numberOfNewConnections = log.ConfigurationLog.NewCount
-			(*opt).numberOfOldConnections = log.ConfigurationLog.OldCount
-			for id, state := range log.ConfigurationLog.ConnMap {
+	for _, raftLog := range (*appEntrArgs).Entries {
+		if raftLog.Type == Configuration {
+			(*opt).numberOfNewConnections = raftLog.ConfigurationLog.NewCount
+			(*opt).numberOfOldConnections = raftLog.ConfigurationLog.OldCount
+			log.Debug(fmt.Sprintf("Updating node configuration (idx: %d, old: %d, new: %d)", raftLog.Idx, (*opt).numberOfOldConnections, (*opt).numberOfNewConnections))
+			for id, state := range raftLog.ConfigurationLog.ConnMap {
 				var connection, found = (*opt).connections.Load(id)
 				if found {
 					// If the node is already connected, just update status (OLD, NEW)
@@ -275,6 +276,7 @@ func handleCandidate(opt *options) {
 		(*opt).requestVoteResponseChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
 	// Receive a response to an issued RequestVoteRPC
 	case reqVoteResponse := <-(*opt).myRequestVoteResponseChan:
+		log.Debug("Received RequestVoteRPC response from: ", (*reqVoteResponse).Id)
 		var connection, _ = (*(*opt).connections).Load((*reqVoteResponse).Id)
 		var conn = connection.(RaftConnection)
 		var currentVotesNew, currentVotesOld = (*opt)._state.updateElection(reqVoteResponse, conn.old, conn.new)
@@ -480,18 +482,18 @@ func applyLog(opt *options, log RaftLog) {
 	if (*opt)._state.getState() == Leader {
 		if log.Type == Game {
 			log.Log.ChanApplied <- true
-		}
-		// If a configuration change log is committed (OLD, NEW configuration), generate its closure
-		if log.Type == Configuration && log.ConfigurationLog.OldCount > 0 {
-			var add = log.ConfigurationLog.OldCount < log.ConfigurationLog.NewCount
-			connMap, newCount := finishConfigurationChange(opt, add)
-			var appliedChan = (*opt)._state.getNewServerResponseChan(log.ConfigurationLog.Id)
-			(*opt)._state.addNewConfigurationLog(ConfigurationLog{log.ConfigurationLog.Id, connMap, 0, newCount, appliedChan})
-			sendAppendEntriesRPCs(opt, (*opt)._state.getAppendEntriesArgs)
-		}
-		if log.Type == Configuration && log.ConfigurationLog.OldCount == 0 {
-			log.ConfigurationLog.ChanApplied <- true
-			(*opt)._state.removeNewServerResponseChan(log.ConfigurationLog.Id)
+		} else if log.Type == Configuration {
+			// If a configuration change log is committed (OLD, NEW configuration), generate its closure
+			if log.ConfigurationLog.OldCount > 0 {
+				var add = log.ConfigurationLog.OldCount < log.ConfigurationLog.NewCount
+				connMap, newCount := finishConfigurationChange(opt, add)
+				var appliedChan = (*opt)._state.getNewServerResponseChan(log.ConfigurationLog.Id)
+				(*opt)._state.addNewConfigurationLog(ConfigurationLog{log.ConfigurationLog.Id, connMap, 0, newCount, appliedChan})
+				// sendAppendEntriesRPCs(opt, (*opt)._state.getAppendEntriesArgs)
+			} else if log.ConfigurationLog.OldCount == 0 {
+				log.ConfigurationLog.ChanApplied <- true
+				(*opt)._state.removeNewServerResponseChan(log.ConfigurationLog.Id)
+			}
 		}
 	}
 }

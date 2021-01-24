@@ -5,6 +5,8 @@ import (
 	"math"
 	"math/rand"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 const maxElectionTimeout = 300
@@ -152,7 +154,7 @@ type state interface {
  * 3. Votes for itself
  */
 func (_state *stateImpl) startElection() {
-	// fmt.Println(_state.id, " become Candidate")
+	log.Debug("Become Candidate")
 	_state.currentTerm++
 	_state.currentState = Candidate
 	_state.votedFor = _state.id
@@ -202,6 +204,7 @@ func (_state *stateImpl) handleRequestToVote(rva *RequestVoteArgs) *RequestVoteR
 	} else if (*rva).Term == _state.currentTerm && (_state.votedFor == "" || _state.votedFor == (*rva).CandidateID) && (*rva).LastLogTerm >= lastLog.Term && (*rva).LastLogIndex >= lastLog.Idx {
 		// fmt.Println(_state.id, " become Follower")
 		_state.stopElectionTimeout()
+		log.Debug("Become Follower")
 		_state.currentState = Follower
 		_state.currentTerm = (*rva).Term
 		_state.votedFor = (*rva).CandidateID
@@ -211,6 +214,7 @@ func (_state *stateImpl) handleRequestToVote(rva *RequestVoteArgs) *RequestVoteR
 		// Our term is out of date, become follower
 		// fmt.Println(_state.id, " become Follower")
 		_state.stopElectionTimeout()
+		log.Debug("Become Follower")
 		_state.currentState = Follower
 		_state.currentTerm = (*rva).Term
 		_state.votedFor = (*rva).CandidateID
@@ -234,6 +238,7 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new
 		_state.currentElectionVotesNew = 0
 		_state.currentElectionVotesOld = 0
 		_state.currentTerm = (*resp).Term
+		log.Debug("Become Follower")
 		_state.currentState = Follower
 		// Only accept votes for the current term
 	} else if (*resp).Term == (_state.currentTerm) && (*resp).VoteGranted == true {
@@ -248,7 +253,7 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new
 }
 
 func (_state *stateImpl) winElection() {
-	// fmt.Println(_state.id, " become Leader")
+	log.Debug("Become Leader")
 	var lastLog = _state.logs[len(_state.logs)-1]
 	_state.currentElectionVotesOld = 0
 	_state.currentElectionVotesNew = 0
@@ -316,6 +321,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 			// fmt.Println(_state.id, " become Follower")
 			// If AppendEntries RPC received from new leader: convert to follower
 			_state.stopElectionTimeout()
+			log.Debug("Become Follower")
 			_state.currentState = Follower
 		} else {
 			return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
@@ -353,7 +359,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 		// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 		var lastLog = (*aea).Entries[len((*aea).Entries)-1]
 		if (*aea).LeaderCommit > _state.commitIndex {
-			_state.commitIndex = int(math.Min(float64((*aea).LeaderCommit), float64(lastLog.Idx))) + 1
+			_state.commitIndex = int(math.Min(float64((*aea).LeaderCommit), float64(lastLog.Idx)))
 		}
 	}
 
