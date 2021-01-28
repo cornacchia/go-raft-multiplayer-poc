@@ -136,12 +136,13 @@ func main() {
 	var stateReqChan chan bool
 	var stateChan chan engine.GameState
 	var actionChan chan engine.GameLog
+	var snapshotRequestChan = make(chan bool)
+	var snapshotResponseChan = make(chan engine.GameState)
+	var snapshotInstallChan = make(chan engine.GameState)
 
-	if mode == "Client" {
-		stateReqChan, stateChan, actionChan = engine.Start(playerID)
-	}
+	stateReqChan, stateChan, actionChan = engine.Start(playerID, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan)
 
-	var _ = raft.Start(mode, port, otherServers, actionChan, nodeConnectedChan)
+	var _ = raft.Start(mode, port, otherServers, actionChan, nodeConnectedChan, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan)
 	var nodeConnections, _ = raft.ConnectToRaftServers(nil, raft.ServerID(port), otherServers)
 
 	var opt = options{

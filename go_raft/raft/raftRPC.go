@@ -32,6 +32,19 @@ type RequestVoteResponse struct {
 	VoteGranted bool
 }
 
+type InstallSnapshotArgs struct {
+	Term              int
+	LastIncludedIndex int
+	LastIncludedTerm  int
+	Data              engine.GameState
+}
+
+type InstallSnapshotResponse struct {
+	Id      ServerID
+	Term    int
+	Success bool
+}
+
 type ActionArgs struct {
 	Id     engine.PlayerID
 	Action int
@@ -43,11 +56,13 @@ type ActionResponse struct {
 }
 
 type RaftListener struct {
-	AppendEntriesArgsChan     chan *AppendEntriesArgs
-	AppendEntriesResponseChan chan *AppendEntriesResponse
-	RequestVoteArgsChan       chan *RequestVoteArgs
-	RequestVoteResponseChan   chan *RequestVoteResponse
-	MessageChan               chan gameAction
+	AppendEntriesArgsChan      chan *AppendEntriesArgs
+	AppendEntriesResponseChan  chan *AppendEntriesResponse
+	RequestVoteArgsChan        chan *RequestVoteArgs
+	RequestVoteResponseChan    chan *RequestVoteResponse
+	InstallSnapshotArgsChan    chan *InstallSnapshotArgs
+	InstallSnapshtResponseChan chan *InstallSnapshotResponse
+	MessageChan                chan gameAction
 }
 
 func initRaftListener(lstOptions *options) *RaftListener {
@@ -56,6 +71,8 @@ func initRaftListener(lstOptions *options) *RaftListener {
 		(*lstOptions).appendEntriesResponseChan,
 		(*lstOptions).requestVoteArgsChan,
 		(*lstOptions).requestVoteResponseChan,
+		(*lstOptions).installSnapshotArgsChan,
+		(*lstOptions).installSnapshotResponseChan,
 		(*lstOptions).msgChan}
 }
 
@@ -89,5 +106,15 @@ func (listener *RaftListener) ActionRPC(args *ActionArgs, reply *ActionResponse)
 	repl := <-chanResponse
 	reply.Applied = repl.Applied
 	reply.LeaderID = repl.LeaderID
+	return nil
+}
+
+func (listener *RaftListener) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnapshotResponse) error {
+	listener.InstallSnapshotArgsChan <- args
+	repl := <-listener.InstallSnapshtResponseChan
+	reply.Id = repl.Id
+	reply.Term = repl.Term
+	reply.Success = repl.Success
+	// TODO handle timeout
 	return nil
 }

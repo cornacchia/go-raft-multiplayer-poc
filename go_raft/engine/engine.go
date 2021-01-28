@@ -125,7 +125,7 @@ func applyAction(state *GameState, action GameLog, delta float64) {
 
 }
 
-func run(playerID PlayerID, requestState chan bool, stateChan chan GameState, actionChan chan GameLog) {
+func run(playerID PlayerID, requestState chan bool, stateChan chan GameState, actionChan chan GameLog, snapshotRequestChan chan bool, snapshotResponseChan chan GameState, installSnapshotChan chan GameState) {
 	var gameState = GameState{make(map[PlayerID]PlayerState)}
 	// gameState.Players[playerID] = PlayerState{Position{2.0, 2.0, 0.0}}
 	var start = time.Now().UnixNano() / 1000000
@@ -136,19 +136,23 @@ func run(playerID PlayerID, requestState chan bool, stateChan chan GameState, ac
 		select {
 		case <-requestState:
 			stateChan <- gameState
+		case <-snapshotRequestChan:
+			snapshotResponseChan <- gameState
+		case newState := <-installSnapshotChan:
+			gameState = newState
 		case newAction := <-actionChan:
 			applyAction(&gameState, newAction, delta)
 		}
 	}
 }
 
-func Start(playerID PlayerID) (chan bool, chan GameState, chan GameLog) {
+func Start(playerID PlayerID, snapshotRequestChan chan bool, snapshotResponseChan chan GameState, installSnapshotChan chan GameState) (chan bool, chan GameState, chan GameLog) {
 	// This channel is used by the UI to request the state of the game
 	var requestState = make(chan bool)
 	// This channel is used to send the state of the game to the UI
 	var stateChan = make(chan GameState)
 	// This channel is used to receive action updates from the Raft network
 	var actionChan = make(chan GameLog)
-	go run(playerID, requestState, stateChan, actionChan)
+	go run(playerID, requestState, stateChan, actionChan, snapshotRequestChan, snapshotResponseChan, installSnapshotChan)
 	return requestState, stateChan, actionChan
 }

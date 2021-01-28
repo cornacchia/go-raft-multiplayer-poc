@@ -13,6 +13,7 @@ import (
 
 const maxElectionTimeout = 300
 const minElectionTimeout = 150
+const logArrayCapacity = 1024
 
 // InstanceState represents the possible state that a raft instance server can be in
 type instanceState = int
@@ -49,6 +50,12 @@ type RaftLog struct {
 	ConfigurationLog ConfigurationLog
 }
 
+type snapshot struct {
+	gameState         *engine.GameState
+	lastIncludedIndex int
+	lastIncludedTerm  int
+}
+
 // ServerID is the identification code for a raft server
 type ServerID string
 
@@ -63,9 +70,11 @@ type stateImpl struct {
 	lastSentLogIndex        map[ServerID]int
 	currentLeader           ServerID
 	// Persistent state
-	currentTerm int
-	votedFor    ServerID
-	logs        []RaftLog
+	currentTerm        int
+	votedFor           ServerID
+	logs               [logArrayCapacity]RaftLog
+	currentLogArrayIdx int
+	lastSnapshot       *snapshot
 	// Volatile state
 	currentState instanceState
 	commitIndex  int
@@ -78,6 +87,8 @@ type stateImpl struct {
 	oldServerCount        int
 	newServerResponseChan map[ServerID]chan bool
 	lock                  *sync.Mutex
+	snapshotRequestChan   chan bool
+	snapshotResponseChan  chan engine.GameState
 }
 
 func newGameRaftLog(idx int, term int, log engine.GameLog) RaftLog {
@@ -91,7 +102,7 @@ func newConfigurationRaftLog(idx int, term int, cfgLog ConfigurationLog) RaftLog
 }
 
 // NewState returns an empty state, only used once at the beginning
-func newState(id string, otherStates []ServerID) *stateImpl {
+func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, snapshotResponseChan chan engine.GameState) *stateImpl {
 	var lastSentLogIndex = make(map[ServerID]int)
 	var nextIndex = make(map[ServerID]int)
 	var matchIndex = make(map[ServerID]int)
@@ -108,7 +119,9 @@ func newState(id string, otherStates []ServerID) *stateImpl {
 		"",
 		0,
 		"",
-		[]RaftLog{newGameRaftLog(0, 0, engine.GameLog{-1, -1, nil})},
+		[logArrayCapacity]RaftLog{newGameRaftLog(0, 0, engine.GameLog{-1, -1, nil})},
+		0,
+		nil,
 		Follower,
 		0,
 		0,
@@ -118,10 +131,10 @@ func newState(id string, otherStates []ServerID) *stateImpl {
 		0,
 		0,
 		newServerResponseChan,
-		lock}
+		lock,
+		snapshotRequestChan,
+		snapshotResponseChan}
 }
-
-// TODO probably lock state before writing to it
 
 // State interface for raft server instances
 type state interface {
@@ -135,8 +148,7 @@ type state interface {
 	updateElection(*RequestVoteResponse, bool, bool) (int, int)
 	winElection()
 	getAppendEntriesArgs(ServerID) *AppendEntriesArgs
-	prepareHearthBeat(ServerID) *AppendEntriesArgs
-	handleAppendEntriesResponse(*AppendEntriesResponse) int
+	handleAppendEntriesResponse(*AppendEntriesResponse) (int, bool)
 	addNewGameLog(engine.GameLog)
 	addNewConfigurationLog(ConfigurationLog)
 	handleAppendEntries(*AppendEntriesArgs) *AppendEntriesResponse
@@ -152,6 +164,9 @@ type state interface {
 	updateNewServerResponseChans(ServerID, chan bool)
 	removeNewServerResponseChan(ServerID)
 	getNewServerResponseChan(ServerID) chan bool
+	prepareInstallSnapshotRPC() *InstallSnapshotArgs
+	handleInstallSnapshotResponse(*InstallSnapshotResponse)
+	handleInstallSnapshotRequest(*InstallSnapshotArgs) *InstallSnapshotResponse
 }
 
 /* To start a new election a server:
@@ -170,7 +185,7 @@ func (_state *stateImpl) startElection() {
 }
 
 func (_state *stateImpl) prepareRequestVoteRPC() *RequestVoteArgs {
-	var lastLog = _state.logs[len(_state.logs)-1]
+	var lastLog = _state.logs[_state.currentLogArrayIdx]
 	return &RequestVoteArgs{_state.currentTerm, _state.id, lastLog.Idx, lastLog.Term}
 }
 
@@ -204,7 +219,7 @@ func (_state *stateImpl) stopElectionTimeout() {
 
 func (_state *stateImpl) handleRequestToVote(rva *RequestVoteArgs) *RequestVoteResponse {
 	// fmt.Printf("Handle request to vote %d, %d\n", _state.currentTerm, (*rva).Term)
-	var lastLog = _state.logs[len(_state.logs)-1]
+	var lastLog = _state.logs[_state.currentLogArrayIdx]
 	if _state.currentTerm > (*rva).Term {
 		return &RequestVoteResponse{_state.id, _state.currentTerm, false}
 	} else if (*rva).Term == _state.currentTerm && (_state.votedFor == "" || _state.votedFor == (*rva).CandidateID) && (*rva).LastLogTerm >= lastLog.Term && (*rva).LastLogIndex >= lastLog.Idx {
@@ -260,7 +275,7 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new
 func (_state *stateImpl) winElection() {
 	_state.lock.Lock()
 	log.Debug("Become Leader")
-	var lastLog = _state.logs[len(_state.logs)-1]
+	var lastLog = _state.logs[_state.currentLogArrayIdx]
 	_state.currentElectionVotesOld = 0
 	_state.currentElectionVotesNew = 0
 	_state.currentState = Leader
@@ -283,17 +298,6 @@ func (_state *stateImpl) prepareAppendEntriesArgs(lastLogIdx int, lastLogTerm in
 		_state.commitIndex}
 }
 
-func (_state *stateImpl) prepareHearthBeat(id ServerID) *AppendEntriesArgs {
-	var lastLogIdx = 0
-	var lastLogTerm = 0
-	if len(_state.logs) > 0 {
-		var lastLog = _state.logs[len(_state.logs)-1]
-		lastLogIdx = lastLog.Idx
-		lastLogTerm = lastLog.Term
-	}
-	return _state.prepareAppendEntriesArgs(lastLogIdx, lastLogTerm, []RaftLog{})
-}
-
 func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
 	_state.lock.Lock()
 	var serverNextIdx = _state.nextIndex[id]
@@ -301,7 +305,8 @@ func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
 	var lastLogIdx = 0
 	var lastLogTerm = 0
 	if serverNextIdx > 0 {
-		var lastLog = _state.logs[serverNextIdx-1]
+		var _, lastLogIdx = _state.findArrayIndexByLogIndex(serverNextIdx - 1)
+		var lastLog = _state.logs[lastLogIdx]
 		lastLogIdx = lastLog.Idx
 		lastLogTerm = lastLog.Term
 	}
@@ -317,9 +322,13 @@ func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
 
 func (_state *stateImpl) addNewGameLog(msg engine.GameLog) {
 	_state.lock.Lock()
-	var lastLog = _state.logs[len(_state.logs)-1]
+	var lastLog = _state.logs[_state.currentLogArrayIdx]
+	if _state.currentLogArrayIdx >= logArrayCapacity-1 {
+		_state.takeSnapshot()
+	}
 	var newLog = newGameRaftLog(lastLog.Idx+1, _state.currentTerm, msg)
-	_state.logs = append(_state.logs, newLog)
+	_state.currentLogArrayIdx++
+	_state.logs[_state.currentLogArrayIdx] = newLog
 	_state.matchIndex[_state.id] = newLog.Idx
 	_state.lastSentLogIndex[_state.id] = newLog.Idx
 	_state.nextIndex[_state.id] = newLog.Idx + 1
@@ -328,20 +337,35 @@ func (_state *stateImpl) addNewGameLog(msg engine.GameLog) {
 
 func (_state *stateImpl) addNewConfigurationLog(conf ConfigurationLog) {
 	_state.lock.Lock()
-	var lastLog = _state.logs[len(_state.logs)-1]
+	var lastLog = _state.logs[_state.currentLogArrayIdx]
+	if _state.currentLogArrayIdx >= logArrayCapacity-1 {
+		_state.takeSnapshot()
+	}
 	var newLog = newConfigurationRaftLog(lastLog.Idx+1, _state.currentTerm, conf)
-	_state.logs = append(_state.logs, newLog)
+	_state.currentLogArrayIdx++
+	_state.logs[_state.currentLogArrayIdx] = newLog
 	_state.matchIndex[_state.id] = newLog.Idx
 	_state.lastSentLogIndex[_state.id] = newLog.Idx
 	_state.nextIndex[_state.id] = newLog.Idx + 1
 	_state.lock.Unlock()
 }
 
+func (_state *stateImpl) findArrayIndexByLogIndex(idx int) (bool, int) {
+	var found = false
+	var result = -1
+	for i := _state.currentLogArrayIdx; i >= 0 && !found; i-- {
+		if _state.logs[i].Idx == idx {
+			found = true
+			result = i
+		}
+	}
+	return found, result
+}
+
 func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntriesResponse {
 	// Handle Candidate and Leader mode particular conditions
 	if _state.currentState != Follower {
 		if (*aea).Term >= _state.currentTerm {
-			// fmt.Println(_state.id, " become Follower")
 			// If AppendEntries RPC received from new leader: convert to follower
 			_state.stopElectionTimeout()
 			log.Debug("Become Follower")
@@ -350,56 +374,71 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 			return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
 		}
 	}
-	// 1. Reply false if term < currentTerm
+
+	// 1. Reply false if rpc term < currentTerm
 	if (*aea).Term < _state.currentTerm {
 		return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
 	}
+
 	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
-	if _state.logs[(*aea).PrevLogIndex].Term != (*aea).PrevLogTerm {
-		return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
+	var found, prevLogIdx = _state.findArrayIndexByLogIndex((*aea).PrevLogIndex)
+	if !found {
+		if _state.lastSnapshot == nil || (*_state.lastSnapshot).lastIncludedTerm != (*aea).PrevLogTerm {
+			return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
+		}
+	} else {
+		if _state.logs[prevLogIdx].Term != (*aea).PrevLogTerm {
+			return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
+		}
 	}
+
 	// At this point we can say that if the append entries request is empty
 	// then it is an heartbeat an so we can keep _state.currentLeader updated
-	if len((*aea).Entries) == 0 {
-		// fmt.Println("received heartbeat ", (*aea).LeaderID)
-		_state.currentLeader = (*aea).LeaderID
-	} else {
-		// 3. If an existing entry conflicts with a new one (same index but different terms),
-		// delete the existing entry and all that follow it
-		// 4. Append any new entries not already in the log
-		for i := 0; i < len((*aea).Entries); i++ {
-			var nextIdx = (*aea).PrevLogIndex + i + 1
-			if (nextIdx) >= len(_state.logs) {
-				_state.logs = append(_state.logs, (*aea).Entries[i])
-			} else {
-				// If the terms conflict remove all the remaining logs
-				if _state.logs[nextIdx].Term != (*aea).Entries[i].Term {
-					_state.logs = _state.logs[:nextIdx]
-					_state.logs = append(_state.logs, (*aea).Entries[i])
-				}
+	_state.currentLeader = (*aea).LeaderID
+
+	// 3. If an existing entry conflicts with a new one (same index but different terms),
+	// delete the existing entry and all that follow it
+	// 4. Append any new entries not already in the log
+	var nextIdx = prevLogIdx + 1
+	for i := 0; i < len((*aea).Entries); i++ {
+		nextIdx = nextIdx + i
+		if nextIdx > _state.currentLogArrayIdx {
+			_state.currentLogArrayIdx = nextIdx
+			_state.logs[_state.currentLogArrayIdx] = (*aea).Entries[i]
+		} else {
+			// If the terms conflict remove all the remaining logs
+			if _state.logs[nextIdx].Term != (*aea).Entries[i].Term {
+				_state.currentLogArrayIdx = nextIdx
+				_state.logs[_state.currentLogArrayIdx] = (*aea).Entries[i]
 			}
 		}
-		// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-		var lastLog = (*aea).Entries[len((*aea).Entries)-1]
-		if (*aea).LeaderCommit > _state.commitIndex {
-			_state.commitIndex = int(math.Min(float64((*aea).LeaderCommit), float64(lastLog.Idx)))
+		if _state.currentLogArrayIdx >= logArrayCapacity-1 {
+			_state.takeSnapshot()
 		}
+	}
+	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+	var lastLog = (*aea).Entries[len((*aea).Entries)-1]
+	if (*aea).LeaderCommit > _state.commitIndex {
+		_state.commitIndex = int(math.Min(float64((*aea).LeaderCommit), float64(lastLog.Idx)))
 	}
 
 	return &AppendEntriesResponse{_state.id, _state.currentTerm, true}
 }
 
-func (_state *stateImpl) handleAppendEntriesResponse(aer *AppendEntriesResponse) int {
+func (_state *stateImpl) handleAppendEntriesResponse(aer *AppendEntriesResponse) (int, bool) {
 	_state.lock.Lock()
-	// TODO check if follower actually present
 	if !(*aer).Success && _state.nextIndex[(*aer).Id] > 0 {
+		var snapshot = false
 		_state.nextIndex[(*aer).Id]--
-		return -1
+		if _state.lastSnapshot != nil && _state.nextIndex[(*aer).Id] <= (*_state.lastSnapshot).lastIncludedIndex {
+			snapshot = true
+		}
+		return -1, snapshot
 	}
 	_state.nextIndex[(*aer).Id] = _state.lastSentLogIndex[(*aer).Id] + 1
 	_state.matchIndex[(*aer).Id] = _state.lastSentLogIndex[(*aer).Id]
 	_state.lock.Unlock()
-	return _state.matchIndex[(*aer).Id]
+	return _state.matchIndex[(*aer).Id], false
 }
 
 func (_state *stateImpl) updateLastApplied() int {
@@ -412,7 +451,8 @@ func (_state *stateImpl) updateLastApplied() int {
 }
 
 func (_state *stateImpl) getLog(i int) RaftLog {
-	return _state.logs[i]
+	var _, logIdx = _state.findArrayIndexByLogIndex(i)
+	return _state.logs[logIdx]
 }
 
 func checkMajority(_state *stateImpl, newCount int, oldCount int) bool {
@@ -431,7 +471,7 @@ func (_state *stateImpl) checkCommits() {
 		return
 	}
 	var bound = false
-	for i := len(_state.logs) - 1; !bound && i >= 0; i-- {
+	for i := _state.currentLogArrayIdx; !bound && i >= 0; i-- {
 		// i > commitIndex
 		if _state.logs[i].Idx <= _state.commitIndex {
 			bound = true
@@ -452,9 +492,7 @@ func (_state *stateImpl) checkCommits() {
 			}
 		}
 		if checkMajority(_state, replicatedFollowersNew, replicatedFollowersOld) {
-			// log[i].term == currentTerm
 			if _state.logs[i].Term == _state.currentTerm {
-				log.Trace("New commit index: ", _state.logs[i].Idx)
 				_state.commitIndex = _state.logs[i].Idx
 			}
 		}
@@ -529,4 +567,47 @@ func (_state *stateImpl) removeNewServerResponseChan(id ServerID) {
 
 func (_state *stateImpl) getNewServerResponseChan(id ServerID) chan bool {
 	return _state.newServerResponseChan[id]
+}
+
+func (_state *stateImpl) takeSnapshot() {
+	log.Debug("Taking snapshot")
+	_state.snapshotRequestChan <- true
+	currentGameState := <-_state.snapshotResponseChan
+	var _, lastAppliedIdx = _state.findArrayIndexByLogIndex(_state.lastApplied)
+	var newSnapshot = snapshot{&currentGameState, _state.logs[lastAppliedIdx].Idx, _state.logs[lastAppliedIdx].Term}
+	_state.lastSnapshot = &newSnapshot
+	_state.currentLogArrayIdx = 0
+}
+
+func (_state *stateImpl) prepareInstallSnapshotRPC() *InstallSnapshotArgs {
+	var lastSnapshot = *_state.lastSnapshot
+	var newInstallSnapshotArgs = InstallSnapshotArgs{
+		_state.currentTerm,
+		lastSnapshot.lastIncludedIndex,
+		lastSnapshot.lastIncludedTerm,
+		*lastSnapshot.gameState}
+	return &newInstallSnapshotArgs
+}
+
+func (_state *stateImpl) handleInstallSnapshotResponse(isr *InstallSnapshotResponse) {
+	if !(*isr).Success && (*isr).Term >= _state.currentTerm {
+		log.Debug("Become Follower")
+		_state.currentState = Follower
+		_state.currentTerm = (*isr).Term
+		_state.currentLeader = (*isr).Id
+	}
+}
+
+func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) *InstallSnapshotResponse {
+	// Respond immediately if rpc term < currentTerm
+	if (*isa).Term < _state.currentTerm {
+		return &InstallSnapshotResponse{_state.id, _state.currentTerm, false}
+	}
+
+	// Apply snapshot
+	var newGameState = (*isa).Data
+	var newSnapshot = snapshot{&newGameState, (*isa).LastIncludedIndex, (*isa).LastIncludedTerm}
+	_state.lastSnapshot = &newSnapshot
+	_state.currentLogArrayIdx = 0
+	return &InstallSnapshotResponse{_state.id, _state.currentTerm, true}
 }
