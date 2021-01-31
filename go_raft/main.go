@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"go_raft/engine"
 	"go_raft/raft"
 	"go_raft/ui"
@@ -25,12 +26,17 @@ type options struct {
 	id               raft.ServerID
 	connectedChan    chan bool
 	disconnectedChan chan bool
+	outputFile       *os.File
 }
 
 func checkError(err error) {
 	if err != nil {
 		log.Error("Error: ", err)
 	}
+}
+
+func getNowMs() int64 {
+	return time.Now().UnixNano() / int64(time.Millisecond)
 }
 
 // Returns an arbitrary connection id from the map
@@ -51,7 +57,7 @@ func getOneConnectionID(opt *options) raft.ServerID {
 	return returnID
 }
 
-func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConnectionChan chan raft.ServerID, msg engine.GameLog, opt *options) {
+func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConnectionChan chan raft.ServerID, msg engine.GameLog, timestamp int64, opt *options) {
 	select {
 	case <-call.Done:
 		if !(*response).Applied {
@@ -68,6 +74,9 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConn
 			(*opt).connectedChan <- true
 		} else if msg.Action == engine.DISCONNECT {
 			(*opt).disconnectedChan <- true
+		} else {
+			var now = getNowMs()
+			(*opt).outputFile.Write([]byte(fmt.Sprintf("%v\n", (now - timestamp))))
 		}
 	case <-time.After(time.Millisecond * actionCallTimeout):
 		// Send again
@@ -82,12 +91,13 @@ func manageActions(opt *options) {
 	for {
 		select {
 		case msg := <-(*opt).actionChan:
+			var timestamp = getNowMs()
 			var actionResponse raft.ActionResponse
 			var actionArgs = raft.ActionArgs{msg.Id, msg.Action}
 			var conn, _ = (*(*opt).connections).Load(currentConnection)
 			var raftConn = conn.(raft.RaftConnection)
 			actionCall := raftConn.Connection.Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
-			go handleActionResponse(actionCall, &actionResponse, newConnectionID, msg, opt)
+			go handleActionResponse(actionCall, &actionResponse, newConnectionID, msg, timestamp, opt)
 		case newLeaderID := <-newConnectionID:
 			log.Trace("Main: New leader id ", newLeaderID)
 			currentConnection = newLeaderID
@@ -103,13 +113,26 @@ func manageActions(opt *options) {
 	}
 }
 
+func handlePrematureTermination(termChan chan os.Signal, connectedChan chan bool, outputFile *os.File, logOutputFile *os.File) {
+	select {
+	case <-termChan:
+		log.Info("Shutting down before full connection...")
+		outputFile.Close()
+		logOutputFile.Close()
+		os.Exit(0)
+	case <-connectedChan:
+	}
+}
+
 func main() {
 	// Seed random number generator
 	rand.Seed(time.Now().UnixNano())
+
 	log.SetLevel(log.DebugLevel)
 
 	termChan := make(chan os.Signal)
 	signal.Notify(termChan, syscall.SIGTERM, syscall.SIGINT)
+	connectedChan := make(chan bool)
 	// Command line arguments
 	args := os.Args
 	if len(args) < 3 {
@@ -118,6 +141,14 @@ func main() {
 	mode := args[1]
 	port := args[2]
 
+	outputFile, err := os.OpenFile("/tmp/go_raft_"+port, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	checkError(err)
+
+	logOutputFile, err := os.OpenFile("/tmp/go_raft_log_"+port, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	checkError(err)
+
+	go handlePrematureTermination(termChan, connectedChan, outputFile, logOutputFile)
+	log.SetOutput(logOutputFile)
 	intPort, err := strconv.Atoi(port)
 	checkError(err)
 	var playerID = engine.PlayerID(intPort)
@@ -151,7 +182,8 @@ func main() {
 		otherServers,
 		serverID,
 		mainConnectedChan,
-		mainDisconnectedChan}
+		mainDisconnectedChan,
+		outputFile}
 	go manageActions(&opt)
 
 	if len(otherServers) > 0 {
@@ -167,9 +199,11 @@ func main() {
 	} else if mode == "Bot" {
 		ui.Start(playerID, stateReqChan, stateChan, uiActionChan, true)
 	}
-
+	connectedChan <- true
 	<-termChan
 	log.Info("Shutting down...")
+	outputFile.Close()
+	logOutputFile.Close()
 	uiActionChan <- engine.GameLog{playerID, engine.DISCONNECT, nil}
 	select {
 	case <-mainDisconnectedChan:
