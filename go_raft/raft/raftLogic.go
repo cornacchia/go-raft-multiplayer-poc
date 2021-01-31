@@ -171,7 +171,6 @@ func sendRequestVoteRPCs(opt *options, requestVoteArgs *RequestVoteArgs) {
 		if id.(ServerID) == (*opt)._state.getID() {
 			return true
 		}
-		// fmt.Println("Send requestVoteRPC: " + string(id))
 		var requestVoteResponse RequestVoteResponse
 		var raftConn = connection.(RaftConnection)
 		requestVoteCall := raftConn.Connection.Go("RaftListener.RequestVoteRPC", requestVoteArgs, &requestVoteResponse, nil)
@@ -247,11 +246,9 @@ func handleFollower(opt *options) {
 	select {
 	// Received message from client: respond with correct leader id
 	case act := <-(*opt).msgChan:
-		// fmt.Println("# Follower: received action")
 		act.ChanResponse <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
 	// Receive an AppendEntriesRPC
 	case appEntrArgs := <-(*opt).appendEntriesArgsChan:
-		// fmt.Println("# Follower: receive AppendEntriesRPC")
 		(*opt)._state.stopElectionTimeout()
 		var response = (*opt)._state.handleAppendEntries(appEntrArgs)
 		(*opt).appendEntriesResponseChan <- response
@@ -260,7 +257,6 @@ func handleFollower(opt *options) {
 		}
 		// Receive a RequestVoteRPC
 	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
-		// fmt.Println("# Follower: receive RequestVoteRPC")
 		(*opt)._state.stopElectionTimeout()
 		(*opt).requestVoteResponseChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
 	// Receive a InstallSnapshotRPC
@@ -269,7 +265,6 @@ func handleFollower(opt *options) {
 	case <-(*opt).connectedChan:
 		(*opt).connected = true
 	case <-(*electionTimeoutTimer).C:
-		// fmt.Println("# Follower: election timeout")
 		// Only start new elections if fully connected to the raft network
 		if (*opt).mode == "Node" || (*opt).connected {
 			(*opt)._state.stopElectionTimeout()
@@ -305,11 +300,9 @@ func handleCandidate(opt *options) {
 	select {
 	// Received message from client: respond with correct leader id
 	case act := <-(*opt).msgChan:
-		// fmt.Println("## Candidate: received action")
 		act.ChanResponse <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
 		// Receive an AppendEntriesRPC
 	case appEntrArgs := <-(*opt).appendEntriesArgsChan:
-		// fmt.Println("## Candidate: receive AppendEntriesRPC")
 		// Election timeout is stopped in handleAppendEntries if necessary
 		var response = (*opt)._state.handleAppendEntries(appEntrArgs)
 		(*opt).appendEntriesResponseChan <- response
@@ -318,7 +311,6 @@ func handleCandidate(opt *options) {
 		}
 	// Receive a RequestVoteRPC
 	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
-		// fmt.Println("## Candidate: receive RequestVoteRPC")
 		// If another candidate asks for a vote the logic doesn't change
 		(*opt).requestVoteResponseChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
 		// Receive a InstallSnapshotRPC
@@ -335,10 +327,9 @@ func handleCandidate(opt *options) {
 			(*opt)._state.stopElectionTimeout()
 			(*opt)._state.winElection()
 			// Immediately send hearthbeat to every follower to establish leadership
-			sendAppendEntriesRPCs(opt, (*opt)._state.getAppendEntriesArgs)
+			sendAppendEntriesRPCs(opt)
 		}
 	case <-(*electionTimeoutTimer).C:
-		// fmt.Println("## Candidate: Hit election timeout")
 		(*opt)._state.stopElectionTimeout()
 		// Too much time has passed with no leader or response, start anew
 		(*opt)._state.startElection()
@@ -351,13 +342,8 @@ func handleCandidate(opt *options) {
 	}
 }
 
-func appendEntriesRPCAction(opt *options, argsFunction func(ServerID) *AppendEntriesArgs, appendEntriesTimeout time.Duration, id interface{}, connection interface{}) bool {
-	if id.(ServerID) == (*opt)._state.getID() {
-		return true
-	}
-	// fmt.Println("Send appendEntriesRPC: " + string(id))
+func appendEntriesRPCAction(opt *options, appendEntriesArgs *AppendEntriesArgs, appendEntriesTimeout time.Duration, id interface{}, connection interface{}) bool {
 	var appendEntriesResponse AppendEntriesResponse
-	var appendEntriesArgs = argsFunction(id.(ServerID))
 	var raftConn = connection.(RaftConnection)
 	appendEntriesCall := raftConn.Connection.Go("RaftListener.AppendEntriesRPC", appendEntriesArgs, &appendEntriesResponse, nil)
 	go func(opt *options, appendEntriesCall *rpc.Call, id ServerID) {
@@ -372,19 +358,35 @@ func appendEntriesRPCAction(opt *options, argsFunction func(ServerID) *AppendEnt
 	return true
 }
 
-func sendAppendEntriesRPCs(opt *options, argsFunction func(ServerID) *AppendEntriesArgs) {
+func sendAppendEntriesRPCs(opt *options) {
 	const appendEntriesTimeout time.Duration = 200
 	// AppendEntriesRPCs are sent to both voting and unvoting connections
 	(*(*opt).connections).Range(func(id interface{}, connection interface{}) bool {
-		return appendEntriesRPCAction(opt, argsFunction, appendEntriesTimeout, id, connection)
+		if id.(ServerID) == (*opt)._state.getID() {
+			return true
+		}
+		var args = (*opt)._state.getAppendEntriesArgs(id.(ServerID))
+		if args == nil {
+			sendInstallSnapshotRPC(opt, false, id.(ServerID))
+			return true
+		}
+		return appendEntriesRPCAction(opt, args, appendEntriesTimeout, id, connection)
 	})
 	(*(*opt).unvotingConnections).Range(func(id interface{}, connection interface{}) bool {
-		return appendEntriesRPCAction(opt, argsFunction, appendEntriesTimeout, id, connection)
+		if id.(ServerID) == (*opt)._state.getID() {
+			return true
+		}
+		var args = (*opt)._state.getAppendEntriesArgs(id.(ServerID))
+		if args == nil {
+			sendInstallSnapshotRPC(opt, true, id.(ServerID))
+			return true
+		}
+		return appendEntriesRPCAction(opt, args, appendEntriesTimeout, id, connection)
 	})
 }
 
 func sendInstallSnapshotRPC(opt *options, unvoting bool, id ServerID) {
-	log.Debug("Send install snapshot RPC")
+	log.Debug("Send install snapshot RPC to: ", id)
 	const installSnapshotTimeout time.Duration = 200
 	var installSnapshotResponse InstallSnapshotResponse
 	var installSnapshotArgs = (*opt)._state.prepareInstallSnapshotRPC()
@@ -511,17 +513,16 @@ func handleLeader(opt *options) {
 			connMap, oldCount, newCount := startConfigurationChange(opt, convertID(act.Msg.Id), false)
 			(*opt)._state.addNewConfigurationLog(ConfigurationLog{convertID(act.Msg.Id), connMap, oldCount, newCount, nil})
 			(*opt)._state.updateNewServerResponseChans(convertID(act.Msg.Id), act.Msg.ChanApplied)
-			sendAppendEntriesRPCs(opt, (*opt)._state.getAppendEntriesArgs)
+			sendAppendEntriesRPCs(opt)
 			go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
 		} else {
 			// Handle player game action (i.e. movement)
 			(*opt)._state.addNewGameLog(act.Msg)
-			sendAppendEntriesRPCs(opt, (*opt)._state.getAppendEntriesArgs)
+			sendAppendEntriesRPCs(opt)
 			go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
 		}
 	// Handle responses to AppendEntries
 	case appendEntriesResponse := <-(*opt).myAppendEntriesResponseChan:
-		// fmt.Println("### Leader: receive response to append entries rpc")
 		var matchIndex, snapshot = (*opt)._state.handleAppendEntriesResponse(appendEntriesResponse)
 
 		// Check if unvoting member should be promoted to voting
@@ -530,34 +531,39 @@ func handleLeader(opt *options) {
 		if snapshot {
 			sendInstallSnapshotRPC(opt, found, (*appendEntriesResponse).Id)
 		}
-
 		if found && matchIndex >= (*opt)._state.getCommitIndex() {
 			(*opt)._state.updateServerConfiguration((*appendEntriesResponse).Id, [2]bool{false, true})
 			connMap, oldCount, newCount := startConfigurationChange(opt, (*appendEntriesResponse).Id, true)
 			(*opt)._state.addNewConfigurationLog(ConfigurationLog{(*appendEntriesResponse).Id, connMap, oldCount, newCount, nil})
-			sendAppendEntriesRPCs(opt, (*opt)._state.getAppendEntriesArgs)
+			sendAppendEntriesRPCs(opt)
 		}
 	// Receive a RequestVoteRPC
 	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
-		// fmt.Println("### Leader: receive request vote rpc")
 		(*opt).requestVoteResponseChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
 		// Receive a InstallSnapshotRPC
 	case installSnapshotArgs := <-(*opt).installSnapshotArgsChan:
 		installSnapshot(opt, installSnapshotArgs)
 	// Receive an AppendEntriesRPC
 	case appEntrArgs := <-(*opt).appendEntriesArgsChan:
-		// fmt.Println("### Leader: receive append entries rpc")
 		(*opt)._state.handleAppendEntries(appEntrArgs)
 	// Receive a response to a issued InstallSnapshotRPC
 	case installSnapshotResponse := <-(*opt).myInstallSnapshotResponseChan:
-		(*opt)._state.handleInstallSnapshotResponse(installSnapshotResponse)
+		var matchIndex = (*opt)._state.handleInstallSnapshotResponse(installSnapshotResponse)
+
+		// Check if unvoting member should be promoted to voting
+		var _, found = (*opt).unvotingConnections.Load((*installSnapshotResponse).Id)
+
+		if found && matchIndex >= (*opt)._state.getCommitIndex() {
+			(*opt)._state.updateServerConfiguration((*installSnapshotResponse).Id, [2]bool{false, true})
+			connMap, oldCount, newCount := startConfigurationChange(opt, (*installSnapshotResponse).Id, true)
+			(*opt)._state.addNewConfigurationLog(ConfigurationLog{(*installSnapshotResponse).Id, connMap, oldCount, newCount, nil})
+			sendAppendEntriesRPCs(opt)
+		}
 	// Receive a response to a (previously) issued RequestVoteRPC
 	// Do nothing, just flush the channel
 	case <-(*opt).myRequestVoteResponseChan:
-		// fmt.Println("### Leader: receive votes issued previously")
 	case <-time.After(time.Millisecond * hearthbeatTimeout):
-		// fmt.Println("### Leader: hearthbeat")
-		sendAppendEntriesRPCs(opt, (*opt)._state.getAppendEntriesArgs)
+		sendAppendEntriesRPCs(opt)
 	}
 	// Check if leader should store new commits
 	(*opt)._state.checkCommits()

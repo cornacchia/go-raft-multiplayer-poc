@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"time"
@@ -28,8 +29,8 @@ type Position struct {
 }
 
 type PlayerState struct {
-	spr int
-	pos Position
+	Spr int
+	Pos Position
 }
 
 type Player interface {
@@ -68,11 +69,11 @@ const playerSpeed = 10
 const playerAngularSpeed = 5
 
 func (playerState *PlayerState) GetPosition() Position {
-	return playerState.pos
+	return playerState.Pos
 }
 
 func (playerState *PlayerState) GetSprite() int {
-	return playerState.spr
+	return playerState.Spr
 }
 
 func checkHitWall(x float64, y float64) bool {
@@ -82,11 +83,10 @@ func checkHitWall(x float64, y float64) bool {
 // This function modifies the state of the game
 // it will modify the state for performance
 
-// TODO probabilmente mandare una azione iniziale di iscrizione
 func applyAction(state *GameState, action GameLog, delta float64) {
 	delta = 0.01
 	playerData := (*state).Players[action.Id]
-	var position = playerData.pos
+	var position = playerData.Pos
 	switch action.Action {
 	case UP:
 		// Move FORWARD
@@ -97,7 +97,7 @@ func applyAction(state *GameState, action GameLog, delta float64) {
 			position.X = newX
 			position.Y = newY
 		}
-		(*state).Players[action.Id] = PlayerState{(*state).Players[action.Id].spr, position}
+		(*state).Players[action.Id] = PlayerState{(*state).Players[action.Id].Spr, position}
 	case DOWN:
 		// Move BACKWARD
 		newX := position.X - (math.Sin(position.A) * playerSpeed * delta)
@@ -107,17 +107,17 @@ func applyAction(state *GameState, action GameLog, delta float64) {
 			position.X = newX
 			position.Y = newY
 		}
-		(*state).Players[action.Id] = PlayerState{(*state).Players[action.Id].spr, position}
+		(*state).Players[action.Id] = PlayerState{(*state).Players[action.Id].Spr, position}
 	case RIGHT:
 		// Rotate RIGHT
 		newA := position.A + (playerAngularSpeed * delta)
 		position.A = newA
-		(*state).Players[action.Id] = PlayerState{(*state).Players[action.Id].spr, position}
+		(*state).Players[action.Id] = PlayerState{(*state).Players[action.Id].Spr, position}
 	case LEFT:
 		// Rotate LEFT
 		newA := position.A - (playerAngularSpeed * delta)
 		position.A = newA
-		(*state).Players[action.Id] = PlayerState{(*state).Players[action.Id].spr, position}
+		(*state).Players[action.Id] = PlayerState{(*state).Players[action.Id].Spr, position}
 	case REGISTER:
 		// Register new player
 		(*state).Players[action.Id] = PlayerState{rand.Intn(5), Position{2.0, 2.0, 0.0}}
@@ -139,6 +139,7 @@ func run(playerID PlayerID, requestState chan bool, stateChan chan GameState, ac
 		case <-snapshotRequestChan:
 			snapshotResponseChan <- gameState
 		case newState := <-installSnapshotChan:
+			fmt.Println("engine: received snapshot to install")
 			gameState = newState
 		case newAction := <-actionChan:
 			applyAction(&gameState, newAction, delta)

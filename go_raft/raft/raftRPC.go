@@ -40,9 +40,11 @@ type InstallSnapshotArgs struct {
 }
 
 type InstallSnapshotResponse struct {
-	Id      ServerID
-	Term    int
-	Success bool
+	Id                ServerID
+	Term              int
+	Success           bool
+	LastIncludedIndex int
+	LastIncludedTerm  int
 }
 
 type ActionArgs struct {
@@ -115,6 +117,8 @@ func (listener *RaftListener) InstallSnapshotRPC(args *InstallSnapshotArgs, repl
 	reply.Id = repl.Id
 	reply.Term = repl.Term
 	reply.Success = repl.Success
+	reply.LastIncludedIndex = repl.LastIncludedIndex
+	reply.LastIncludedTerm = repl.LastIncludedTerm
 	// TODO handle timeout
 	return nil
 }
