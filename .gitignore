@@ -1,2 +1,3 @@
 notes.md
 **/*.beam
+go_raft/go_raft
