@@ -8,6 +8,7 @@ import (
 	"image/draw"
 	"image/png"
 	"math"
+	"math/rand"
 	"os"
 	"sort"
 	"time"
@@ -47,6 +48,7 @@ type uiOptions struct {
 	stateRequestChan chan bool
 	gameStateChan    chan engine.GameState
 	actionChan       chan engine.GameLog
+	bot              bool
 }
 
 type playerPosition struct {
@@ -57,6 +59,41 @@ type playerPosition struct {
 func checkError(err error) {
 	if err != nil {
 		log.Error("Error: ", err)
+	}
+}
+
+func newRandomDirection(directionChan chan int) {
+	var newDirection = rand.Intn(5)
+	time.Sleep(time.Second * time.Duration(rand.Intn(4)))
+	directionChan <- newDirection
+}
+
+func botBehavior(opt *uiOptions) {
+	var directionChan = make(chan int)
+	var direction = 0
+	var waitingForDirection = false
+	(*opt).actionChan <- engine.GameLog{(*opt).playerID, engine.REGISTER, nil}
+	for {
+		select {
+		case newDirection := <-directionChan:
+			direction = newDirection
+			waitingForDirection = false
+		case <-time.After(time.Millisecond * 100):
+			if !waitingForDirection {
+				go newRandomDirection(directionChan)
+				waitingForDirection = true
+			}
+			switch direction {
+			case 0:
+				(*opt).actionChan <- engine.GameLog{(*opt).playerID, engine.UP, nil}
+			case 1:
+				(*opt).actionChan <- engine.GameLog{(*opt).playerID, engine.RIGHT, nil}
+			case 2:
+				(*opt).actionChan <- engine.GameLog{(*opt).playerID, engine.DOWN, nil}
+			case 3:
+				(*opt).actionChan <- engine.GameLog{(*opt).playerID, engine.LEFT, nil}
+			}
+		}
 	}
 }
 
@@ -324,13 +361,18 @@ func loadImages() {
 	}
 }
 
-func Start(playerID engine.PlayerID, stateRequestChan chan bool, gameStateChan chan engine.GameState, actionChan chan engine.GameLog) {
+func Start(playerID engine.PlayerID, stateRequestChan chan bool, gameStateChan chan engine.GameState, actionChan chan engine.GameLog, bot bool) {
 	var opt = &uiOptions{
 		playerID,
 		stateRequestChan,
 		gameStateChan,
-		actionChan}
-	initializeSprites()
-	loadImages()
-	go run(opt)
+		actionChan,
+		bot}
+	if (*opt).bot {
+		go botBehavior(opt)
+	} else {
+		initializeSprites()
+		loadImages()
+		go run(opt)
+	}
 }

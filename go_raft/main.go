@@ -163,7 +163,9 @@ func main() {
 	}
 
 	if mode == "Client" {
-		ui.Start(playerID, stateReqChan, stateChan, uiActionChan)
+		ui.Start(playerID, stateReqChan, stateChan, uiActionChan, false)
+	} else if mode == "Bot" {
+		ui.Start(playerID, stateReqChan, stateChan, uiActionChan, true)
 	}
 
 	<-termChan
