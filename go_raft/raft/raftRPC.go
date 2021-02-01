@@ -99,7 +99,7 @@ func (listener *RaftListener) RequestVoteRPC(args *RequestVoteArgs, reply *Reque
 }
 
 func (listener *RaftListener) ActionRPC(args *ActionArgs, reply *ActionResponse) error {
-	chanApplied := make(chan bool)
+	chanApplied := make(chan bool, 1)
 	chanResponse := make(chan *ActionResponse)
 	var act = gameAction{
 		engine.GameLog{(*args).Id, (*args).Action, chanApplied},

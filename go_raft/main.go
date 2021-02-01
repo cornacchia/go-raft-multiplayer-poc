@@ -17,7 +17,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const actionCallTimeout = 500
+const actionCallTimeout = 300
 
 type options struct {
 	actionChan       chan engine.GameLog
@@ -79,9 +79,16 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConn
 			(*opt).outputFile.Write([]byte(fmt.Sprintf("%v\n", (now - timestamp))))
 		}
 	case <-time.After(time.Millisecond * actionCallTimeout):
+		if msg.Action == engine.CONNECT {
+			log.Debug("Timeout connecting to raft network")
+			(*opt).actionChan <- msg
+		} else if msg.Action != engine.DISCONNECT {
+			(*opt).outputFile.Write([]byte("Action dropped"))
+		}
 		// Send again
 		newConnectionChan <- (*opt).id
-		(*opt).actionChan <- msg
+		// TODO proviamo a non rimandare per vedere se evita memory leak
+		//(*opt).actionChan <- msg
 	}
 }
 
@@ -117,8 +124,6 @@ func handlePrematureTermination(termChan chan os.Signal, connectedChan chan bool
 	select {
 	case <-termChan:
 		log.Info("Shutting down before full connection...")
-		outputFile.Close()
-		logOutputFile.Close()
 		os.Exit(0)
 	case <-connectedChan:
 	}
@@ -202,8 +207,6 @@ func main() {
 	connectedChan <- true
 	<-termChan
 	log.Info("Shutting down...")
-	outputFile.Close()
-	logOutputFile.Close()
 	uiActionChan <- engine.GameLog{playerID, engine.DISCONNECT, nil}
 	select {
 	case <-mainDisconnectedChan:

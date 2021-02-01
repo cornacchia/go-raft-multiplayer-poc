@@ -166,7 +166,7 @@ func startListeningServer(raftListener *RaftListener, port string) {
 }
 
 func sendRequestVoteRPCs(opt *options, requestVoteArgs *RequestVoteArgs) {
-	const electionTimeout time.Duration = 200
+	const electionTimeout time.Duration = 150
 	(*(*opt).connections).Range(func(id interface{}, connection interface{}) bool {
 		if id.(ServerID) == (*opt)._state.getID() {
 			return true
@@ -174,11 +174,11 @@ func sendRequestVoteRPCs(opt *options, requestVoteArgs *RequestVoteArgs) {
 		var requestVoteResponse RequestVoteResponse
 		var raftConn = connection.(RaftConnection)
 		requestVoteCall := raftConn.Connection.Go("RaftListener.RequestVoteRPC", requestVoteArgs, &requestVoteResponse, nil)
-		go func(opt *options, appendEntriesCall *rpc.Call, id ServerID) {
+		go func(opt *options, requestVoteCall *rpc.Call, id ServerID) {
 			select {
 			case <-requestVoteCall.Done:
 				(*opt).myRequestVoteResponseChan <- &requestVoteResponse
-			case <-time.After(time.Second * electionTimeout):
+			case <-time.After(time.Millisecond * electionTimeout):
 				log.Warning("RequestVoteRPC: Did not receive response from: " + string(id))
 				// TODO: handle error
 			}
@@ -511,15 +511,19 @@ func handleLeader(opt *options) {
 		} else if act.Msg.Action == engine.DISCONNECT {
 			log.Debug("Received request to disconnect")
 			connMap, oldCount, newCount := startConfigurationChange(opt, convertID(act.Msg.Id), false)
-			(*opt)._state.addNewConfigurationLog(ConfigurationLog{convertID(act.Msg.Id), connMap, oldCount, newCount, nil})
-			(*opt)._state.updateNewServerResponseChans(convertID(act.Msg.Id), act.Msg.ChanApplied)
-			sendAppendEntriesRPCs(opt)
-			go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
+			var ok = (*opt)._state.addNewConfigurationLog(ConfigurationLog{convertID(act.Msg.Id), connMap, oldCount, newCount, nil})
+			if ok {
+				(*opt)._state.updateNewServerResponseChans(convertID(act.Msg.Id), act.Msg.ChanApplied)
+				sendAppendEntriesRPCs(opt)
+				go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
+			}
 		} else {
 			// Handle player game action (i.e. movement)
-			(*opt)._state.addNewGameLog(act.Msg)
-			sendAppendEntriesRPCs(opt)
-			go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
+			var ok = (*opt)._state.addNewGameLog(act.Msg)
+			if ok {
+				sendAppendEntriesRPCs(opt)
+				go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
+			}
 		}
 	// Handle responses to AppendEntries
 	case appendEntriesResponse := <-(*opt).myAppendEntriesResponseChan:
@@ -534,8 +538,10 @@ func handleLeader(opt *options) {
 		if found && matchIndex >= (*opt)._state.getCommitIndex() {
 			(*opt)._state.updateServerConfiguration((*appendEntriesResponse).Id, [2]bool{false, true})
 			connMap, oldCount, newCount := startConfigurationChange(opt, (*appendEntriesResponse).Id, true)
-			(*opt)._state.addNewConfigurationLog(ConfigurationLog{(*appendEntriesResponse).Id, connMap, oldCount, newCount, nil})
-			sendAppendEntriesRPCs(opt)
+			var ok = (*opt)._state.addNewConfigurationLog(ConfigurationLog{(*appendEntriesResponse).Id, connMap, oldCount, newCount, nil})
+			if ok {
+				sendAppendEntriesRPCs(opt)
+			}
 		}
 	// Receive a RequestVoteRPC
 	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
@@ -556,8 +562,10 @@ func handleLeader(opt *options) {
 		if found && matchIndex >= (*opt)._state.getCommitIndex() {
 			(*opt)._state.updateServerConfiguration((*installSnapshotResponse).Id, [2]bool{false, true})
 			connMap, oldCount, newCount := startConfigurationChange(opt, (*installSnapshotResponse).Id, true)
-			(*opt)._state.addNewConfigurationLog(ConfigurationLog{(*installSnapshotResponse).Id, connMap, oldCount, newCount, nil})
-			sendAppendEntriesRPCs(opt)
+			var ok = (*opt)._state.addNewConfigurationLog(ConfigurationLog{(*installSnapshotResponse).Id, connMap, oldCount, newCount, nil})
+			if ok {
+				sendAppendEntriesRPCs(opt)
+			}
 		}
 	// Receive a response to a (previously) issued RequestVoteRPC
 	// Do nothing, just flush the channel

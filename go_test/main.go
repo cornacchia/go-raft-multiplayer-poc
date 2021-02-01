@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -17,17 +18,36 @@ type execStats struct {
 	node      int
 	totValue  int64
 	nOfValues int64
+	dropped   int64
 }
 
 var openCmds = [1024]*exec.Cmd{}
 var numberOfCmds = 0
 
-func newCommand(mode string, port int, startLeaderPort int, resChan chan execStats, idx int) {
+func baseNode() {
+	cmd := exec.Command("./go_raft", "Node", "6666")
+	cmd.Dir = "../go_raft"
+	cmd.Stderr = os.Stderr
+	openCmds[0] = cmd
+	numberOfCmds = 1
+	cmd.Start()
+	if err := cmd.Wait(); err != nil {
+		killAll()
+		log.Fatal(err)
+	}
+}
+
+func newCommand(mode string, port int, startLeaderPort int, idx int) {
 	cmd := exec.Command("./go_raft", mode, fmt.Sprint(port), fmt.Sprint(startLeaderPort))
 	cmd.Dir = "../go_raft"
+	cmd.Stderr = os.Stderr
 	openCmds[idx] = cmd
 	numberOfCmds++
 	cmd.Start()
+	if err := cmd.Wait(); err != nil {
+		killAll()
+		log.Fatal(err)
+	}
 }
 
 func killAll() {
@@ -39,8 +59,9 @@ func killAll() {
 }
 
 func readResults(node int) execStats {
-	var reg = regexp.MustCompile("[0-9]+")
-	var stats = execStats{node, 0, 0}
+	var regTs = regexp.MustCompile("[0-9]+")
+	var regDropped = regexp.MustCompile("Action dropped")
+	var stats = execStats{node, 0, 0, 0}
 	file, _ := os.Open("/tmp/go_raft_" + fmt.Sprint(node))
 	fileScanner := bufio.NewScanner(file)
 	fileScanner.Split(bufio.ScanLines)
@@ -53,11 +74,15 @@ func readResults(node int) execStats {
 	file.Close()
 
 	for _, eachline := range fileTextLines {
-		match := reg.FindString(eachline)
-		if match != "" {
+		matchTs := regTs.FindString(eachline)
+		matchDropped := regDropped.FindString(eachline)
+		if matchTs != "" {
 			stats.nOfValues++
-			var intVal, _ = strconv.Atoi(match)
+			var intVal, _ = strconv.Atoi(matchTs)
 			stats.totValue += int64(intVal)
+		}
+		if matchDropped != "" {
+			stats.dropped++
 		}
 	}
 	return stats
@@ -78,23 +103,25 @@ func removeAllLogFiles() {
 func testNodes(number int, retChan chan bool) {
 	removeAllLogFiles()
 	fmt.Println("##### Test for ", number, " nodes")
-	resChan := make(chan execStats)
 	// Start base nodes
-	cmd := exec.Command("./go_raft", "Node", "6666")
-	cmd.Dir = "../go_raft"
-	openCmds[0] = cmd
-	cmd.Start()
-	newCommand("Node", 6667, 6666, nil, 1)
-	newCommand("Node", 6668, 6666, nil, 2)
-	newCommand("Node", 6669, 6666, nil, 3)
-	newCommand("Node", 6670, 6666, nil, 4)
-	numberOfCmds = 5
+	go baseNode()
+	time.Sleep(time.Millisecond * 1000)
+	go newCommand("Node", 6667, 6666, 1)
+	time.Sleep(time.Millisecond * 1000)
+	go newCommand("Node", 6668, 6666, 2)
+	time.Sleep(time.Millisecond * 1000)
+	go newCommand("Node", 6669, 6666, 3)
+	time.Sleep(time.Millisecond * 1000)
+	go newCommand("Node", 6670, 6666, 4)
+	time.Sleep(time.Millisecond * 1000)
 
 	for i := 5; i < number; i++ {
-		go newCommand("Bot", 6666+i, 6666, resChan, i)
+		go newCommand("Bot", 6666+i, 6666, i)
+		time.Sleep(time.Millisecond * 1000)
 	}
+	fmt.Println("All processes started, wait for test to complete")
 
-	time.Sleep(time.Second * 120)
+	time.Sleep(time.Second * 180)
 	killAll()
 	fmt.Println("###################################")
 	var total float64 = 0
@@ -141,7 +168,7 @@ func main() {
 	//}
 
 	retChan := make(chan bool)
-	go testNodes(40, retChan)
+	go testNodes(60, retChan)
 	<-retChan
 
 	completeChan <- true

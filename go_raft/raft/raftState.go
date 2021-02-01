@@ -150,8 +150,8 @@ type state interface {
 	winElection()
 	getAppendEntriesArgs(ServerID) *AppendEntriesArgs
 	handleAppendEntriesResponse(*AppendEntriesResponse) (int, bool)
-	addNewGameLog(engine.GameLog)
-	addNewConfigurationLog(ConfigurationLog)
+	addNewGameLog(engine.GameLog) bool
+	addNewConfigurationLog(ConfigurationLog) bool
 	handleAppendEntries(*AppendEntriesArgs) *AppendEntriesResponse
 	updateLastApplied() int
 	getLog(int) RaftLog
@@ -307,9 +307,7 @@ func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
 	var myLastLogIdx, myLastLogTerm = _state.getLastLogIdxTerm()
 	// Check if the next log for this server is in the log array or in a snapshot
 	var serverNextIdx = _state.nextIndex[id]
-	// fmt.Println("serverNextIdx: ", serverNextIdx)
-	var found, arrayLogIdx = _state.findArrayIndexByLogIndex(serverNextIdx)
-	// fmt.Println("arrayLogIdx: ", arrayLogIdx)
+	var found, _, arrayLogIdx = _state.findArrayIndexByLogIndex(serverNextIdx)
 	if !found && serverNextIdx <= myLastLogIdx {
 		// The log is in a snapshot
 		_state.lock.Unlock()
@@ -328,7 +326,6 @@ func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
 		lastLogIdx = (*_state.lastSnapshot).lastIncludedIndex
 		lastLogTerm = (*_state.lastSnapshot).lastIncludedTerm
 	} else if arrayLogIdx > 0 {
-		//var _, lastLogIdx = _state.findArrayIndexByLogIndex(arrayLogIdx - 1)
 		var lastLog = _state.logs[arrayLogIdx-1]
 		lastLogIdx = lastLog.Idx
 		lastLogTerm = lastLog.Term
@@ -343,38 +340,49 @@ func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
 	return _state.prepareAppendEntriesArgs(lastLogIdx, lastLogTerm, logsToSend)
 }
 
-func (_state *stateImpl) addNewGameLog(msg engine.GameLog) {
+func (_state *stateImpl) addNewGameLog(msg engine.GameLog) bool {
 	_state.lock.Lock()
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
 	var newLog = newGameRaftLog(lastLogIdx+1, _state.currentTerm, msg)
-	_state.logs[_state.nextLogArrayIdx] = newLog
-	_state.nextLogArrayIdx++
 	if _state.nextLogArrayIdx >= logArrayCapacity {
 		_state.takeSnapshot()
 	}
+	if _state.nextLogArrayIdx >= logArrayCapacity {
+		_state.lock.Unlock()
+		return false
+	}
+	_state.logs[_state.nextLogArrayIdx] = newLog
+	_state.nextLogArrayIdx++
 	_state.matchIndex[_state.id] = newLog.Idx
 	_state.lastSentLogIndex[_state.id] = newLog.Idx
 	_state.nextIndex[_state.id] = newLog.Idx + 1
 	_state.lock.Unlock()
+	return true
 }
 
-func (_state *stateImpl) addNewConfigurationLog(conf ConfigurationLog) {
+func (_state *stateImpl) addNewConfigurationLog(conf ConfigurationLog) bool {
 	_state.lock.Lock()
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
 	var newLog = newConfigurationRaftLog(lastLogIdx+1, _state.currentTerm, conf)
-	_state.logs[_state.nextLogArrayIdx] = newLog
-	_state.nextLogArrayIdx++
 	if _state.nextLogArrayIdx >= logArrayCapacity {
 		_state.takeSnapshot()
 	}
+	if _state.nextLogArrayIdx >= logArrayCapacity {
+		_state.lock.Unlock()
+		return false
+	}
+	_state.logs[_state.nextLogArrayIdx] = newLog
+	_state.nextLogArrayIdx++
 	_state.matchIndex[_state.id] = newLog.Idx
 	_state.lastSentLogIndex[_state.id] = newLog.Idx
 	_state.nextIndex[_state.id] = newLog.Idx + 1
 	_state.lock.Unlock()
+	return true
 }
 
-func (_state *stateImpl) findArrayIndexByLogIndex(idx int) (bool, int) {
+func (_state *stateImpl) findArrayIndexByLogIndex(idx int) (bool, bool, int) {
 	var found = false
+	var snapshot = false
 	var result = -1
 	for i := _state.nextLogArrayIdx - 1; i >= 0 && !found; i-- {
 		if _state.logs[i].Idx == idx {
@@ -382,7 +390,12 @@ func (_state *stateImpl) findArrayIndexByLogIndex(idx int) (bool, int) {
 			result = i
 		}
 	}
-	return found, result
+	if !found && _state.lastSnapshot != nil {
+		if (*_state.lastSnapshot).lastIncludedIndex == idx {
+			snapshot = true
+		}
+	}
+	return found, snapshot, result
 }
 
 func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntriesResponse {
@@ -406,14 +419,20 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 	}
 
 	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
-	var found, prevLogIdx = _state.findArrayIndexByLogIndex((*aea).PrevLogIndex)
+	var found, snapshot, prevLogIdx = _state.findArrayIndexByLogIndex((*aea).PrevLogIndex)
 	if !found {
 		if _state.lastSnapshot == nil || (*_state.lastSnapshot).lastIncludedTerm != (*aea).PrevLogTerm {
 			return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
 		}
 	} else {
-		if _state.logs[prevLogIdx].Term != (*aea).PrevLogTerm {
-			return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
+		if snapshot {
+			if (*_state.lastSnapshot).lastIncludedTerm != (*aea).PrevLogTerm {
+				return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
+			}
+		} else {
+			if _state.logs[prevLogIdx].Term != (*aea).PrevLogTerm {
+				return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
+			}
 		}
 	}
 
@@ -425,6 +444,20 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 	// delete the existing entry and all that follow it
 	// 4. Append any new entries not already in the log
 	var startNextIdx = prevLogIdx + 1
+
+	// Check if the node has enough log space for all the logs of the AppendEntriesRPC
+	if startNextIdx+len((*aea).Entries) >= logArrayCapacity {
+		if !_state.takeSnapshot() {
+			return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
+		}
+	}
+	_, _, prevLogIdx = _state.findArrayIndexByLogIndex((*aea).PrevLogIndex)
+	startNextIdx = prevLogIdx + 1
+	if startNextIdx+len((*aea).Entries) >= logArrayCapacity {
+		return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
+	}
+
+	// At this point we should be confident that we have enough space for the logs
 	for i := 0; i < len((*aea).Entries); i++ {
 		var nextIdx = startNextIdx + i
 		if nextIdx >= _state.nextLogArrayIdx {
@@ -436,9 +469,6 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 				_state.logs[nextIdx] = (*aea).Entries[i]
 				_state.nextLogArrayIdx = nextIdx + 1
 			}
-		}
-		if _state.nextLogArrayIdx >= logArrayCapacity {
-			_state.takeSnapshot()
 		}
 	}
 	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
@@ -474,7 +504,7 @@ func (_state *stateImpl) handleAppendEntriesResponse(aer *AppendEntriesResponse)
 func (_state *stateImpl) updateLastApplied() int {
 	if _state.commitIndex > _state.lastApplied {
 		_state.lastApplied++
-		var _, logIdx = _state.findArrayIndexByLogIndex(_state.lastApplied)
+		var _, _, logIdx = _state.findArrayIndexByLogIndex(_state.lastApplied)
 		return logIdx
 	}
 	return -1
@@ -599,10 +629,13 @@ func (_state *stateImpl) getNewServerResponseChan(id ServerID) chan bool {
 	return _state.newServerResponseChan[id]
 }
 
-func (_state *stateImpl) takeSnapshot() {
+func (_state *stateImpl) takeSnapshot() bool {
 	_state.snapshotRequestChan <- true
 	currentGameState := <-_state.snapshotResponseChan
-	var _, lastAppliedIdx = _state.findArrayIndexByLogIndex(_state.lastApplied)
+	var found, _, lastAppliedIdx = _state.findArrayIndexByLogIndex(_state.lastApplied)
+	if !found {
+		return false
+	}
 	log.Debug("Taking snapshot (arr: ", lastAppliedIdx, ", idx: ", _state.logs[lastAppliedIdx].Idx, ", term: ", _state.logs[lastAppliedIdx].Term, ")")
 	var newSnapshot = snapshot{&currentGameState, _state.logs[lastAppliedIdx].Idx, _state.logs[lastAppliedIdx].Term}
 	_state.lastSnapshot = &newSnapshot
@@ -614,6 +647,7 @@ func (_state *stateImpl) takeSnapshot() {
 		restartIdx++
 	}
 	_state.nextLogArrayIdx = restartIdx
+	return true
 }
 
 func (_state *stateImpl) prepareInstallSnapshotRPC() *InstallSnapshotArgs {

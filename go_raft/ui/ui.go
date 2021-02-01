@@ -78,7 +78,7 @@ func botBehavior(opt *uiOptions) {
 		case newDirection := <-directionChan:
 			direction = newDirection
 			waitingForDirection = false
-		case <-time.After(time.Millisecond * 100):
+		case <-time.After(time.Millisecond * 200):
 			if !waitingForDirection {
 				go newRandomDirection(directionChan)
 				waitingForDirection = true
