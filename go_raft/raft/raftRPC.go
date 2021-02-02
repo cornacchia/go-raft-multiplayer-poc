@@ -48,7 +48,8 @@ type InstallSnapshotResponse struct {
 type ActionArgs struct {
 	Id       string
 	ActionId int64
-	Action   int
+	Type     string
+	Action   []byte
 }
 
 type ActionResponse struct {
@@ -101,7 +102,7 @@ func (listener *RaftListener) ActionRPC(args *ActionArgs, reply *ActionResponse)
 	chanApplied := make(chan bool, 1)
 	chanResponse := make(chan *ActionResponse)
 	var act = gameAction{
-		GameLog{fmt.Sprint((*args).Id), (*args).ActionId, (*args).Action, chanApplied},
+		GameLog{fmt.Sprint((*args).Id), (*args).ActionId, (*args).Type, (*args).Action, chanApplied},
 		chanResponse}
 	listener.MessageChan <- act
 	repl := <-chanResponse

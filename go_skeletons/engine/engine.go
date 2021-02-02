@@ -52,10 +52,15 @@ type GameState struct {
 	Players map[PlayerID]PlayerState `json:"players"`
 }
 
+type ActionImpl struct {
+	Action int `json:"act"`
+}
+
 type GameLog struct {
 	Id       PlayerID
 	ActionId int64
-	Action   int
+	Type     string
+	Action   ActionImpl
 }
 
 var GameMap = [16]string{
@@ -94,9 +99,9 @@ func checkHitWall(x float64, y float64) bool {
 // This function modifies the state of the game
 // it will modify the state for performance
 
-func applyAction(state *GameState, action raft.GameLog) {
+func applyAction(state *GameState, playerID PlayerID, action ActionImpl) {
 	var delta = 0.01
-	playerData := (*state).Players[PlayerID(action.Id)]
+	playerData := (*state).Players[playerID]
 	var position = playerData.Pos
 	switch action.Action {
 	case UP:
@@ -108,7 +113,7 @@ func applyAction(state *GameState, action raft.GameLog) {
 			position.X = newX
 			position.Y = newY
 		}
-		(*state).Players[PlayerID(action.Id)] = PlayerState{(*state).Players[PlayerID(action.Id)].Spr, position}
+		(*state).Players[playerID] = PlayerState{(*state).Players[playerID].Spr, position}
 	case DOWN:
 		// Move BACKWARD
 		newX := position.X - (math.Sin(position.A) * playerSpeed * delta)
@@ -118,20 +123,20 @@ func applyAction(state *GameState, action raft.GameLog) {
 			position.X = newX
 			position.Y = newY
 		}
-		(*state).Players[PlayerID(action.Id)] = PlayerState{(*state).Players[PlayerID(action.Id)].Spr, position}
+		(*state).Players[playerID] = PlayerState{(*state).Players[playerID].Spr, position}
 	case RIGHT:
 		// Rotate RIGHT
 		newA := position.A + (playerAngularSpeed * delta)
 		position.A = newA
-		(*state).Players[PlayerID(action.Id)] = PlayerState{(*state).Players[PlayerID(action.Id)].Spr, position}
+		(*state).Players[playerID] = PlayerState{(*state).Players[playerID].Spr, position}
 	case LEFT:
 		// Rotate LEFT
 		newA := position.A - (playerAngularSpeed * delta)
 		position.A = newA
-		(*state).Players[PlayerID(action.Id)] = PlayerState{(*state).Players[PlayerID(action.Id)].Spr, position}
+		(*state).Players[playerID] = PlayerState{(*state).Players[playerID].Spr, position}
 	case REGISTER:
 		// Register new player
-		(*state).Players[PlayerID(action.Id)] = PlayerState{rand.Intn(5), Position{2.0, 2.0, 0.0}}
+		(*state).Players[playerID] = PlayerState{rand.Intn(5), Position{2.0, 2.0, 0.0}}
 	}
 
 }
@@ -143,14 +148,16 @@ func run(opt *engineOptions) {
 		case <-(*opt).requestState:
 			(*opt).stateChan <- gameState
 		case <-(*opt).snapshotRequestChan:
-			// TODO marshal
 			jsonGameState, _ := json.Marshal(gameState)
 			(*opt).snapshotResponseChan <- jsonGameState
 		case newJsonState := <-(*opt).installSnapshotChan:
 			fmt.Println("engine: received snapshot to install")
 			json.Unmarshal(newJsonState, &gameState)
 		case newAction := <-(*opt).actionChan:
-			applyAction(&gameState, newAction)
+			var playerID = PlayerID(newAction.Id)
+			var action ActionImpl
+			json.Unmarshal(newAction.Action, &action)
+			applyAction(&gameState, playerID, action)
 		}
 	}
 }

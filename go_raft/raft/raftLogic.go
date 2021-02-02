@@ -491,7 +491,7 @@ func handleLeader(opt *options) {
 	select {
 	// Received message from client
 	case act := <-(*opt).msgChan:
-		if act.Msg.Action == 6 {
+		if act.Msg.Type == "Connect" {
 			log.Debug("Received request to connect")
 			// Connect to new node and add it to the unvotingConnections map
 			responseChan := make(chan *RaftConnectionResponse)
@@ -503,7 +503,7 @@ func handleLeader(opt *options) {
 			// TODO this should be removed eventually
 			(*opt)._state.updateNewServerResponseChans((*resp).Id, act.Msg.ChanApplied)
 			go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
-		} else if act.Msg.Action == 7 {
+		} else if act.Msg.Type == "Disconnect" {
 			log.Debug("Received request to disconnect")
 			connMap, oldCount, newCount := startConfigurationChange(opt, ServerID(act.Msg.Id), false)
 			var ok = (*opt)._state.addNewConfigurationLog(ConfigurationLog{ServerID(act.Msg.Id), connMap, oldCount, newCount, nil})

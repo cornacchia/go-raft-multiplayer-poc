@@ -78,7 +78,7 @@ func botBehavior(opt *uiOptions) {
 	var directionChan = make(chan int)
 	var direction = 0
 	var waitingForDirection = false
-	(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), engine.REGISTER}
+	(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.REGISTER}}
 	for {
 		select {
 		case newDirection := <-directionChan:
@@ -91,13 +91,13 @@ func botBehavior(opt *uiOptions) {
 			}
 			switch direction {
 			case 0:
-				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), engine.UP}
+				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.UP}}
 			case 1:
-				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), engine.RIGHT}
+				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.RIGHT}}
 			case 2:
-				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), engine.DOWN}
+				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.DOWN}}
 			case 3:
-				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), engine.LEFT}
+				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.LEFT}}
 			}
 		}
 	}
@@ -304,7 +304,7 @@ func run(opt *uiOptions) {
 
 		killChan := make(chan bool)
 		go paintScreen(opt, uiScreen, window, killChan)
-		(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), engine.REGISTER}
+		(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.REGISTER}}
 		for {
 			e := window.NextEvent()
 
@@ -320,13 +320,13 @@ func run(opt *uiOptions) {
 					killChan <- true
 					return
 				} else if e.Code == key.CodeW && e.Direction == key.DirPress {
-					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), engine.UP}
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.UP}}
 				} else if e.Code == key.CodeA && e.Direction == key.DirPress {
-					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), engine.LEFT}
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.LEFT}}
 				} else if e.Code == key.CodeS && e.Direction == key.DirPress {
-					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), engine.DOWN}
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.DOWN}}
 				} else if e.Code == key.CodeD && e.Direction == key.DirPress {
-					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), engine.RIGHT}
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.RIGHT}}
 				}
 			case error:
 				log.Print(e)

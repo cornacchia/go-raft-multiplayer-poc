@@ -43,7 +43,8 @@ type ConfigurationLog struct {
 type GameLog struct {
 	Id          string
 	ActionId    int64
-	Action      int
+	Type        string
+	Action      []byte
 	ChanApplied chan bool
 }
 
@@ -104,7 +105,7 @@ func newGameRaftLog(idx int, term int, log GameLog) RaftLog {
 }
 
 func newConfigurationRaftLog(idx int, term int, cfgLog ConfigurationLog) RaftLog {
-	var emptyLog = GameLog{"", -1, -1, nil}
+	var emptyLog = GameLog{"", -1, "", []byte{}, nil}
 	return RaftLog{idx, term, Configuration, emptyLog, cfgLog}
 }
 
@@ -126,7 +127,7 @@ func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, 
 		"",
 		0,
 		"",
-		[logArrayCapacity]RaftLog{newGameRaftLog(0, 0, GameLog{"", -1, -1, nil})},
+		[logArrayCapacity]RaftLog{newGameRaftLog(0, 0, GameLog{"", -1, "", []byte{}, nil})},
 		1,
 		nil,
 		Follower,
