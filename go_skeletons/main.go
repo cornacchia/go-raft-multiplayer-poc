@@ -2,9 +2,9 @@ package main
 
 import (
 	"fmt"
-	"go_raft/engine"
 	"go_raft/raft"
-	"go_raft/ui"
+	"go_skeletons/engine"
+	"go_skeletons/ui"
 	"math/rand"
 	"net/rpc"
 	"os"

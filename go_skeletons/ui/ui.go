@@ -2,7 +2,7 @@ package ui
 
 import (
 	"fmt"
-	"go_raft/engine"
+	"go_skeletons/engine"
 	"image"
 	"image/color"
 	"image/draw"
