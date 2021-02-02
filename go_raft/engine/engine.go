@@ -1,10 +1,11 @@
 package engine
 
 import (
+	"encoding/json"
 	"fmt"
+	"go_raft/raft"
 	"math"
 	"math/rand"
-	"time"
 )
 
 const (
@@ -17,7 +18,17 @@ const (
 	DISCONNECT int = 7
 )
 
-type PlayerID int
+type engineOptions struct {
+	playerID             PlayerID
+	requestState         chan bool
+	stateChan            chan GameState
+	actionChan           chan raft.GameLog
+	snapshotRequestChan  chan bool
+	snapshotResponseChan chan []byte
+	installSnapshotChan  chan []byte
+}
+
+type PlayerID string
 
 type Position struct {
 	// Horizontal position on map
@@ -29,8 +40,8 @@ type Position struct {
 }
 
 type PlayerState struct {
-	Spr int
-	Pos Position
+	Spr int      `json:"spr"`
+	Pos Position `json:"pos"`
 }
 
 type Player interface {
@@ -38,13 +49,13 @@ type Player interface {
 }
 
 type GameState struct {
-	Players map[PlayerID]PlayerState
+	Players map[PlayerID]PlayerState `json:"players"`
 }
 
 type GameLog struct {
-	Id          PlayerID
-	Action      int
-	ChanApplied chan bool
+	Id       PlayerID
+	ActionId int64
+	Action   int
 }
 
 var GameMap = [16]string{
@@ -83,9 +94,9 @@ func checkHitWall(x float64, y float64) bool {
 // This function modifies the state of the game
 // it will modify the state for performance
 
-func applyAction(state *GameState, action GameLog, delta float64) {
-	delta = 0.01
-	playerData := (*state).Players[action.Id]
+func applyAction(state *GameState, action raft.GameLog) {
+	var delta = 0.01
+	playerData := (*state).Players[PlayerID(action.Id)]
 	var position = playerData.Pos
 	switch action.Action {
 	case UP:
@@ -97,7 +108,7 @@ func applyAction(state *GameState, action GameLog, delta float64) {
 			position.X = newX
 			position.Y = newY
 		}
-		(*state).Players[action.Id] = PlayerState{(*state).Players[action.Id].Spr, position}
+		(*state).Players[PlayerID(action.Id)] = PlayerState{(*state).Players[PlayerID(action.Id)].Spr, position}
 	case DOWN:
 		// Move BACKWARD
 		newX := position.X - (math.Sin(position.A) * playerSpeed * delta)
@@ -107,53 +118,58 @@ func applyAction(state *GameState, action GameLog, delta float64) {
 			position.X = newX
 			position.Y = newY
 		}
-		(*state).Players[action.Id] = PlayerState{(*state).Players[action.Id].Spr, position}
+		(*state).Players[PlayerID(action.Id)] = PlayerState{(*state).Players[PlayerID(action.Id)].Spr, position}
 	case RIGHT:
 		// Rotate RIGHT
 		newA := position.A + (playerAngularSpeed * delta)
 		position.A = newA
-		(*state).Players[action.Id] = PlayerState{(*state).Players[action.Id].Spr, position}
+		(*state).Players[PlayerID(action.Id)] = PlayerState{(*state).Players[PlayerID(action.Id)].Spr, position}
 	case LEFT:
 		// Rotate LEFT
 		newA := position.A - (playerAngularSpeed * delta)
 		position.A = newA
-		(*state).Players[action.Id] = PlayerState{(*state).Players[action.Id].Spr, position}
+		(*state).Players[PlayerID(action.Id)] = PlayerState{(*state).Players[PlayerID(action.Id)].Spr, position}
 	case REGISTER:
 		// Register new player
-		(*state).Players[action.Id] = PlayerState{rand.Intn(5), Position{2.0, 2.0, 0.0}}
+		(*state).Players[PlayerID(action.Id)] = PlayerState{rand.Intn(5), Position{2.0, 2.0, 0.0}}
 	}
 
 }
 
-func run(playerID PlayerID, requestState chan bool, stateChan chan GameState, actionChan chan GameLog, snapshotRequestChan chan bool, snapshotResponseChan chan GameState, installSnapshotChan chan GameState) {
+func run(opt *engineOptions) {
 	var gameState = GameState{make(map[PlayerID]PlayerState)}
-	// gameState.Players[playerID] = PlayerState{Position{2.0, 2.0, 0.0}}
-	var start = time.Now().UnixNano() / 1000000
 	for {
-		var now = time.Now().UnixNano() / 1000000
-		var delta = float64(now-start) / 1000.0
-		start = now
 		select {
-		case <-requestState:
-			stateChan <- gameState
-		case <-snapshotRequestChan:
-			snapshotResponseChan <- gameState
-		case newState := <-installSnapshotChan:
+		case <-(*opt).requestState:
+			(*opt).stateChan <- gameState
+		case <-(*opt).snapshotRequestChan:
+			// TODO marshal
+			jsonGameState, _ := json.Marshal(gameState)
+			(*opt).snapshotResponseChan <- jsonGameState
+		case newJsonState := <-(*opt).installSnapshotChan:
 			fmt.Println("engine: received snapshot to install")
-			gameState = newState
-		case newAction := <-actionChan:
-			applyAction(&gameState, newAction, delta)
+			json.Unmarshal(newJsonState, &gameState)
+		case newAction := <-(*opt).actionChan:
+			applyAction(&gameState, newAction)
 		}
 	}
 }
 
-func Start(playerID PlayerID, snapshotRequestChan chan bool, snapshotResponseChan chan GameState, installSnapshotChan chan GameState) (chan bool, chan GameState, chan GameLog) {
+func Start(playerID PlayerID, snapshotRequestChan chan bool, snapshotResponseChan chan []byte, installSnapshotChan chan []byte) (chan bool, chan GameState, chan raft.GameLog) {
 	// This channel is used by the UI to request the state of the game
 	var requestState = make(chan bool)
 	// This channel is used to send the state of the game to the UI
 	var stateChan = make(chan GameState)
 	// This channel is used to receive action updates from the Raft network
-	var actionChan = make(chan GameLog)
-	go run(playerID, requestState, stateChan, actionChan, snapshotRequestChan, snapshotResponseChan, installSnapshotChan)
+	var actionChan = make(chan raft.GameLog)
+	var options = engineOptions{
+		playerID,
+		requestState,
+		stateChan,
+		actionChan,
+		snapshotRequestChan,
+		snapshotResponseChan,
+		installSnapshotChan}
+	go run(&options)
 	return requestState, stateChan, actionChan
 }

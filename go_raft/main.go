@@ -9,7 +9,6 @@ import (
 	"net/rpc"
 	"os"
 	"os/signal"
-	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -100,7 +99,7 @@ func manageActions(opt *options) {
 		case msg := <-(*opt).actionChan:
 			var timestamp = getNowMs()
 			var actionResponse raft.ActionResponse
-			var actionArgs = raft.ActionArgs{msg.Id, msg.Action}
+			var actionArgs = raft.ActionArgs{string(msg.Id), msg.ActionId, msg.Action}
 			var conn, _ = (*(*opt).connections).Load(currentConnection)
 			var raftConn = conn.(raft.RaftConnection)
 			actionCall := raftConn.Connection.Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
@@ -153,10 +152,9 @@ func main() {
 	checkError(err)
 
 	go handlePrematureTermination(termChan, connectedChan, outputFile, logOutputFile)
-	log.SetOutput(logOutputFile)
-	intPort, err := strconv.Atoi(port)
+	// log.SetOutput(logOutputFile)
 	checkError(err)
-	var playerID = engine.PlayerID(intPort)
+	var playerID = engine.PlayerID(port)
 	var serverID = raft.ServerID(port)
 	// Get other servers
 	otherServers := make([]raft.ServerID, 0)
@@ -171,10 +169,10 @@ func main() {
 	var uiActionChan = make(chan engine.GameLog)
 	var stateReqChan chan bool
 	var stateChan chan engine.GameState
-	var actionChan chan engine.GameLog
+	var actionChan chan raft.GameLog
 	var snapshotRequestChan = make(chan bool)
-	var snapshotResponseChan = make(chan engine.GameState)
-	var snapshotInstallChan = make(chan engine.GameState)
+	var snapshotResponseChan = make(chan []byte)
+	var snapshotInstallChan = make(chan []byte)
 
 	stateReqChan, stateChan, actionChan = engine.Start(playerID, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan)
 
@@ -192,7 +190,7 @@ func main() {
 	go manageActions(&opt)
 
 	if len(otherServers) > 0 {
-		uiActionChan <- engine.GameLog{playerID, engine.CONNECT, nil}
+		uiActionChan <- engine.GameLog{playerID, ui.GetActionID(), engine.CONNECT}
 		// Wait for the node to be fully connected
 		<-mainConnectedChan
 		// Notify the raft node
@@ -207,7 +205,7 @@ func main() {
 	connectedChan <- true
 	<-termChan
 	log.Info("Shutting down...")
-	uiActionChan <- engine.GameLog{playerID, engine.DISCONNECT, nil}
+	uiActionChan <- engine.GameLog{playerID, ui.GetActionID(), engine.DISCONNECT}
 	select {
 	case <-mainDisconnectedChan:
 	case <-time.After(time.Millisecond * 2000):

@@ -2,7 +2,6 @@ package raft
 
 import (
 	"fmt"
-	"go_raft/engine"
 	"net"
 	"net/http"
 	"net/rpc"
@@ -24,7 +23,7 @@ type RaftConnection struct {
 }
 
 type gameAction struct {
-	Msg          engine.GameLog
+	Msg          GameLog
 	ChanResponse chan *ActionResponse
 }
 
@@ -52,10 +51,10 @@ type options struct {
 	// This is used to receive messages from clients RPC
 	msgChan chan gameAction
 	// This is used to send messages to the game engine
-	actionChan             chan engine.GameLog
+	actionChan             chan GameLog
 	snapshotRequestChan    chan bool
-	snapshotResponseChan   chan engine.GameState
-	snapshotInstallChan    chan engine.GameState
+	snapshotResponseChan   chan []byte
+	snapshotInstallChan    chan []byte
 	connections            *sync.Map
 	numberOfNewConnections int
 	numberOfOldConnections int
@@ -65,7 +64,7 @@ type options struct {
 }
 
 // Start function for server logic
-func Start(mode string, port string, otherServers []ServerID, actionChan chan engine.GameLog, connectedChan chan bool, snapshotRequestChan chan bool, snapshotResponseChan chan engine.GameState, installSnapshotChan chan engine.GameState) *sync.Map {
+func Start(mode string, port string, otherServers []ServerID, actionChan chan GameLog, connectedChan chan bool, snapshotRequestChan chan bool, snapshotResponseChan chan []byte, installSnapshotChan chan []byte) *sync.Map {
 	var newOptions = &options{
 		mode,
 		newState(port, otherServers, snapshotRequestChan, snapshotResponseChan),
@@ -486,21 +485,17 @@ func finishConfigurationChange(opt *options, add bool) (map[ServerID][2]bool, in
 	return connectionMap, newCount
 }
 
-func convertID(pID engine.PlayerID) ServerID {
-	return ServerID(fmt.Sprint(pID))
-}
-
 func handleLeader(opt *options) {
 	log.Trace("### Leader: handle turn")
 	const hearthbeatTimeout time.Duration = 20
 	select {
 	// Received message from client
 	case act := <-(*opt).msgChan:
-		if act.Msg.Action == engine.CONNECT {
+		if act.Msg.Action == 6 {
 			log.Debug("Received request to connect")
 			// Connect to new node and add it to the unvotingConnections map
 			responseChan := make(chan *RaftConnectionResponse)
-			go ConnectToRaftServer(opt, convertID(act.Msg.Id), responseChan)
+			go ConnectToRaftServer(opt, ServerID(act.Msg.Id), responseChan)
 			resp := <-responseChan
 			var newConnection = RaftConnection{(*resp).Connection, false, false}
 			(*(*opt).unvotingConnections).Store((*resp).Id, newConnection)
@@ -508,12 +503,12 @@ func handleLeader(opt *options) {
 			// TODO this should be removed eventually
 			(*opt)._state.updateNewServerResponseChans((*resp).Id, act.Msg.ChanApplied)
 			go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
-		} else if act.Msg.Action == engine.DISCONNECT {
+		} else if act.Msg.Action == 7 {
 			log.Debug("Received request to disconnect")
-			connMap, oldCount, newCount := startConfigurationChange(opt, convertID(act.Msg.Id), false)
-			var ok = (*opt)._state.addNewConfigurationLog(ConfigurationLog{convertID(act.Msg.Id), connMap, oldCount, newCount, nil})
+			connMap, oldCount, newCount := startConfigurationChange(opt, ServerID(act.Msg.Id), false)
+			var ok = (*opt)._state.addNewConfigurationLog(ConfigurationLog{ServerID(act.Msg.Id), connMap, oldCount, newCount, nil})
 			if ok {
-				(*opt)._state.updateNewServerResponseChans(convertID(act.Msg.Id), act.Msg.ChanApplied)
+				(*opt)._state.updateNewServerResponseChans(ServerID(act.Msg.Id), act.Msg.ChanApplied)
 				sendAppendEntriesRPCs(opt)
 				go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
 			}

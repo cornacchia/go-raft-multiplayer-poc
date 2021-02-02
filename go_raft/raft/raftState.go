@@ -2,7 +2,6 @@ package raft
 
 import (
 	"fmt"
-	"go_raft/engine"
 	"math"
 	"math/rand"
 	"sync"
@@ -41,18 +40,25 @@ type ConfigurationLog struct {
 	ChanApplied chan bool
 }
 
+type GameLog struct {
+	Id          string
+	ActionId    int64
+	Action      int
+	ChanApplied chan bool
+}
+
 // RaftLog are logs exchanged by the server instances and applied to the game engine (i.e. the state machine)
 type RaftLog struct {
 	Idx              int
 	Term             int
 	Type             LogType
-	Log              engine.GameLog
+	Log              GameLog
 	ConfigurationLog ConfigurationLog
 }
 
 type snapshot struct {
 	// TODO aggiungere stato delle connessioni
-	gameState         *engine.GameState
+	gameState         []byte
 	lastIncludedIndex int
 	lastIncludedTerm  int
 }
@@ -89,21 +95,21 @@ type stateImpl struct {
 	newServerResponseChan map[ServerID]chan bool
 	lock                  *sync.Mutex
 	snapshotRequestChan   chan bool
-	snapshotResponseChan  chan engine.GameState
+	snapshotResponseChan  chan []byte
 }
 
-func newGameRaftLog(idx int, term int, log engine.GameLog) RaftLog {
+func newGameRaftLog(idx int, term int, log GameLog) RaftLog {
 	var emptyCfgLog = ConfigurationLog{"", nil, 0, 0, nil}
 	return RaftLog{idx, term, Game, log, emptyCfgLog}
 }
 
 func newConfigurationRaftLog(idx int, term int, cfgLog ConfigurationLog) RaftLog {
-	var emptyLog = engine.GameLog{-1, -1, nil}
+	var emptyLog = GameLog{"", -1, -1, nil}
 	return RaftLog{idx, term, Configuration, emptyLog, cfgLog}
 }
 
 // NewState returns an empty state, only used once at the beginning
-func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, snapshotResponseChan chan engine.GameState) *stateImpl {
+func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, snapshotResponseChan chan []byte) *stateImpl {
 	var lastSentLogIndex = make(map[ServerID]int)
 	var nextIndex = make(map[ServerID]int)
 	var matchIndex = make(map[ServerID]int)
@@ -120,7 +126,7 @@ func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, 
 		"",
 		0,
 		"",
-		[logArrayCapacity]RaftLog{newGameRaftLog(0, 0, engine.GameLog{-1, -1, nil})},
+		[logArrayCapacity]RaftLog{newGameRaftLog(0, 0, GameLog{"", -1, -1, nil})},
 		1,
 		nil,
 		Follower,
@@ -150,7 +156,7 @@ type state interface {
 	winElection()
 	getAppendEntriesArgs(ServerID) *AppendEntriesArgs
 	handleAppendEntriesResponse(*AppendEntriesResponse) (int, bool)
-	addNewGameLog(engine.GameLog) bool
+	addNewGameLog(GameLog) bool
 	addNewConfigurationLog(ConfigurationLog) bool
 	handleAppendEntries(*AppendEntriesArgs) *AppendEntriesResponse
 	updateLastApplied() int
@@ -340,7 +346,7 @@ func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
 	return _state.prepareAppendEntriesArgs(lastLogIdx, lastLogTerm, logsToSend)
 }
 
-func (_state *stateImpl) addNewGameLog(msg engine.GameLog) bool {
+func (_state *stateImpl) addNewGameLog(msg GameLog) bool {
 	_state.lock.Lock()
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
 	var newLog = newGameRaftLog(lastLogIdx+1, _state.currentTerm, msg)
@@ -637,7 +643,7 @@ func (_state *stateImpl) takeSnapshot() bool {
 		return false
 	}
 	log.Debug("Taking snapshot (arr: ", lastAppliedIdx, ", idx: ", _state.logs[lastAppliedIdx].Idx, ", term: ", _state.logs[lastAppliedIdx].Term, ")")
-	var newSnapshot = snapshot{&currentGameState, _state.logs[lastAppliedIdx].Idx, _state.logs[lastAppliedIdx].Term}
+	var newSnapshot = snapshot{currentGameState, _state.logs[lastAppliedIdx].Idx, _state.logs[lastAppliedIdx].Term}
 	_state.lastSnapshot = &newSnapshot
 	// Copy remaining logs at the start of the log array
 	var restartIdx = 0
@@ -656,7 +662,7 @@ func (_state *stateImpl) prepareInstallSnapshotRPC() *InstallSnapshotArgs {
 		_state.currentTerm,
 		lastSnapshot.lastIncludedIndex,
 		lastSnapshot.lastIncludedTerm,
-		*lastSnapshot.gameState}
+		lastSnapshot.gameState}
 	return &newInstallSnapshotArgs
 }
 
@@ -687,7 +693,7 @@ func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) 
 
 	// Apply snapshot
 	var newGameState = (*isa).Data
-	var newSnapshot = snapshot{&newGameState, (*isa).LastIncludedIndex, (*isa).LastIncludedTerm}
+	var newSnapshot = snapshot{newGameState, (*isa).LastIncludedIndex, (*isa).LastIncludedTerm}
 	_state.lastSnapshot = &newSnapshot
 	_state.nextLogArrayIdx = 0
 	return &InstallSnapshotResponse{_state.id, _state.currentTerm, true, (*isa).LastIncludedIndex, (*isa).LastIncludedTerm}

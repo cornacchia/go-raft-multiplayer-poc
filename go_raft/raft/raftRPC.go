@@ -1,8 +1,6 @@
 package raft
 
-import (
-	"go_raft/engine"
-)
+import "fmt"
 
 type AppendEntriesArgs struct {
 	Term         int
@@ -36,7 +34,7 @@ type InstallSnapshotArgs struct {
 	Term              int
 	LastIncludedIndex int
 	LastIncludedTerm  int
-	Data              engine.GameState
+	Data              []byte
 }
 
 type InstallSnapshotResponse struct {
@@ -48,8 +46,9 @@ type InstallSnapshotResponse struct {
 }
 
 type ActionArgs struct {
-	Id     engine.PlayerID
-	Action int
+	Id       string
+	ActionId int64
+	Action   int
 }
 
 type ActionResponse struct {
@@ -102,7 +101,7 @@ func (listener *RaftListener) ActionRPC(args *ActionArgs, reply *ActionResponse)
 	chanApplied := make(chan bool, 1)
 	chanResponse := make(chan *ActionResponse)
 	var act = gameAction{
-		engine.GameLog{(*args).Id, (*args).Action, chanApplied},
+		GameLog{fmt.Sprint((*args).Id), (*args).ActionId, (*args).Action, chanApplied},
 		chanResponse}
 	listener.MessageChan <- act
 	repl := <-chanResponse

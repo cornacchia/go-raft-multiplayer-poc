@@ -33,6 +33,7 @@ var mapHeight = len(engine.GameMap)
 var mapWidth = len(engine.GameMap[0])
 var maxDepth = float64(mapHeight)
 var screenSize = image.Point{screenWidth, screenHeight}
+var actionCount int64 = 0
 
 type sprite struct {
 	fileName string
@@ -62,6 +63,11 @@ func checkError(err error) {
 	}
 }
 
+func GetActionID() int64 {
+	actionCount++
+	return actionCount
+}
+
 func newRandomDirection(directionChan chan int) {
 	var newDirection = rand.Intn(5)
 	time.Sleep(time.Second * time.Duration(rand.Intn(4)))
@@ -72,7 +78,7 @@ func botBehavior(opt *uiOptions) {
 	var directionChan = make(chan int)
 	var direction = 0
 	var waitingForDirection = false
-	(*opt).actionChan <- engine.GameLog{(*opt).playerID, engine.REGISTER, nil}
+	(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), engine.REGISTER}
 	for {
 		select {
 		case newDirection := <-directionChan:
@@ -85,13 +91,13 @@ func botBehavior(opt *uiOptions) {
 			}
 			switch direction {
 			case 0:
-				(*opt).actionChan <- engine.GameLog{(*opt).playerID, engine.UP, nil}
+				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), engine.UP}
 			case 1:
-				(*opt).actionChan <- engine.GameLog{(*opt).playerID, engine.RIGHT, nil}
+				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), engine.RIGHT}
 			case 2:
-				(*opt).actionChan <- engine.GameLog{(*opt).playerID, engine.DOWN, nil}
+				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), engine.DOWN}
 			case 3:
-				(*opt).actionChan <- engine.GameLog{(*opt).playerID, engine.LEFT, nil}
+				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), engine.LEFT}
 			}
 		}
 	}
@@ -298,18 +304,10 @@ func run(opt *uiOptions) {
 
 		killChan := make(chan bool)
 		go paintScreen(opt, uiScreen, window, killChan)
-		(*opt).actionChan <- engine.GameLog{(*opt).playerID, engine.REGISTER, nil}
+		(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), engine.REGISTER}
 		for {
 			e := window.NextEvent()
 
-			// Print events
-			/*
-				format := "got %#v\n"
-				if _, ok := e.(fmt.Stringer); ok {
-					format = "got %v\n"
-				}
-				fmt.Printf(format, e)
-			*/
 			switch e := e.(type) {
 			case lifecycle.Event:
 				if e.To == lifecycle.StageDead {
@@ -322,13 +320,13 @@ func run(opt *uiOptions) {
 					killChan <- true
 					return
 				} else if e.Code == key.CodeW && e.Direction == key.DirPress {
-					(*opt).actionChan <- engine.GameLog{(*opt).playerID, engine.UP, nil}
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), engine.UP}
 				} else if e.Code == key.CodeA && e.Direction == key.DirPress {
-					(*opt).actionChan <- engine.GameLog{(*opt).playerID, engine.LEFT, nil}
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), engine.LEFT}
 				} else if e.Code == key.CodeS && e.Direction == key.DirPress {
-					(*opt).actionChan <- engine.GameLog{(*opt).playerID, engine.DOWN, nil}
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), engine.DOWN}
 				} else if e.Code == key.CodeD && e.Direction == key.DirPress {
-					(*opt).actionChan <- engine.GameLog{(*opt).playerID, engine.RIGHT, nil}
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), engine.RIGHT}
 				}
 			case error:
 				log.Print(e)
