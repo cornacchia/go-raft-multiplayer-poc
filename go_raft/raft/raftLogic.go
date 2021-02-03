@@ -190,47 +190,64 @@ func countConnections(opt *options) int {
 	return (*opt).numberOfNewConnections + (*opt).numberOfOldConnections
 }
 
+func checkConnectionsToRemove(opt *options, connMap map[ServerID][2]bool) {
+	// Only remove connections when they are no longer in the connection map (old or new)
+	(*(*opt).connections).Range(func(id interface{}, connection interface{}) bool {
+		if _, found := connMap[id.(ServerID)]; !found {
+			log.Debug("Disconnected:", id)
+			var conn = connection.(RaftConnection)
+			conn.Connection.Close()
+			(*(*opt).connections).LoadAndDelete(id)
+			(*opt)._state.removeServer(id.(ServerID))
+		}
+		return true
+	})
+}
+
+func checkConnectionsToAdd(opt *options, connMap map[ServerID][2]bool) {
+	for id, state := range connMap {
+		var connection, found = (*opt).connections.Load(id)
+		if found {
+			// If the node is already connected, just update status (OLD, NEW)
+			var conn = connection.(RaftConnection)
+			conn.Old = state[0]
+			conn.New = state[1]
+			(*(*opt).connections).Store(id, conn)
+		} else {
+			// Otherwise we need to connect to the node
+			responseChan := make(chan *RaftConnectionResponse)
+			go ConnectToRaftServer(opt, id, responseChan)
+			resp := <-responseChan
+			var newConnection = RaftConnection{(*resp).Connection, state[0], state[1]}
+			(*opt)._state.updateServerConfiguration(id, [2]bool{state[0], state[1]})
+			(*(*opt).connections).Store(id, newConnection)
+		}
+	}
+}
+
 func checkNewConfigurations(opt *options, appEntrArgs *AppendEntriesArgs) {
-	// TODO: verify if we need rpc.Client.Close()
 	for _, raftLog := range (*appEntrArgs).Entries {
 		if raftLog.Type == Configuration {
 			(*opt).numberOfNewConnections = raftLog.ConfigurationLog.NewCount
 			(*opt).numberOfOldConnections = raftLog.ConfigurationLog.OldCount
 			log.Debug(fmt.Sprintf("Updating node configuration (idx: %d, old: %d, new: %d)", raftLog.Idx, (*opt).numberOfOldConnections, (*opt).numberOfNewConnections))
 			log.Debug(raftLog.ConfigurationLog.ConnMap)
-			for id, state := range raftLog.ConfigurationLog.ConnMap {
-				var connection, found = (*opt).connections.Load(id)
-				if found {
-					// If the node is already connected, just update status (OLD, NEW)
-					var conn = connection.(RaftConnection)
-					conn.Old = state[0]
-					conn.New = state[1]
-					// Check if node has been removed
-					if conn.Old && !conn.New {
-						log.Debug("Disconnected:", id)
-						(*(*opt).connections).LoadAndDelete(id)
-						(*opt)._state.removeServer(id)
-					} else {
-						(*(*opt).connections).Store(id, conn)
-					}
-				} else {
-					// Otherwise we need to connect to the node
-					responseChan := make(chan *RaftConnectionResponse)
-					go ConnectToRaftServer(opt, id, responseChan)
-					resp := <-responseChan
-					var newConnection = RaftConnection{(*resp).Connection, false, true}
-					(*opt)._state.updateServerConfiguration(id, [2]bool{false, true})
-					(*(*opt).connections).Store(id, newConnection)
-				}
-			}
+			checkConnectionsToAdd(opt, raftLog.ConfigurationLog.ConnMap)
+			checkConnectionsToRemove(opt, raftLog.ConfigurationLog.ConnMap)
 		}
 	}
 }
 
-func installSnapshot(opt *options, installSnapshotArgs *InstallSnapshotArgs) {
-	var installSnapshotResponse = (*opt)._state.handleInstallSnapshotRequest(installSnapshotArgs)
+func installSnapshot(opt *options, isa *InstallSnapshotArgs) {
+	var installSnapshotResponse = (*opt)._state.handleInstallSnapshotRequest(isa)
 	if (*installSnapshotResponse).Success {
-		(*opt).snapshotInstallChan <- (*installSnapshotArgs).Data
+		(*opt).snapshotInstallChan <- (*isa).Data
+		(*opt).numberOfNewConnections = (*isa).NewServerCount
+		(*opt).numberOfOldConnections = (*isa).OldServerCount
+		log.Debug(fmt.Sprintf("Updating node configuration (SNAPSHOT, old: %d, new: %d)", (*opt).numberOfOldConnections, (*opt).numberOfNewConnections))
+		log.Debug((*isa).ServerConfiguration)
+		checkConnectionsToAdd(opt, (*isa).ServerConfiguration)
+		checkConnectionsToRemove(opt, (*isa).ServerConfiguration)
 	}
 	(*opt).installSnapshotResponseChan <- installSnapshotResponse
 }
@@ -462,7 +479,6 @@ func finishConfigurationChange(opt *options, add bool) (map[ServerID][2]bool, in
 	log.Debug("Finish configuration change")
 	var newCount = 0
 	var connectionMap = map[ServerID][2]bool{}
-	var connectionsToRemove = []ServerID{}
 	// Remove new connection from unvoting connection list
 	// Mark all connections as NEW
 	(*(*opt).connections).Range(func(id interface{}, connection interface{}) bool {
@@ -472,16 +488,10 @@ func finishConfigurationChange(opt *options, add bool) (map[ServerID][2]bool, in
 			connectionMap[id.(ServerID)] = [2]bool{false, true}
 			newCount++
 			(*(*opt).connections).Store(id, conn)
-		} else {
-			connectionsToRemove = append(connectionsToRemove, id.(ServerID))
 		}
 		return true
 	})
 
-	for _, id := range connectionsToRemove {
-		log.Debug("Remove connection: " + id)
-		var _, _ = (*(*opt).connections).LoadAndDelete(id)
-	}
 	return connectionMap, newCount
 }
 
@@ -500,7 +510,6 @@ func handleLeader(opt *options) {
 			var newConnection = RaftConnection{(*resp).Connection, false, false}
 			(*(*opt).unvotingConnections).Store((*resp).Id, newConnection)
 			(*opt)._state.updateServerConfiguration((*resp).Id, [2]bool{false, false})
-			// TODO this should be removed eventually
 			(*opt)._state.updateNewServerResponseChans((*resp).Id, act.Msg.ChanApplied)
 			go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
 		} else if act.Msg.Type == "Disconnect" {
@@ -591,6 +600,7 @@ func applyLog(opt *options, log RaftLog) {
 				if log.ConfigurationLog.ChanApplied != nil {
 					log.ConfigurationLog.ChanApplied <- true
 				}
+				checkConnectionsToRemove(opt, log.ConfigurationLog.ConnMap)
 				(*opt)._state.removeNewServerResponseChan(log.ConfigurationLog.Id)
 			}
 		}

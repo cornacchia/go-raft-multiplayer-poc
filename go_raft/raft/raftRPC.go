@@ -31,10 +31,13 @@ type RequestVoteResponse struct {
 }
 
 type InstallSnapshotArgs struct {
-	Term              int
-	LastIncludedIndex int
-	LastIncludedTerm  int
-	Data              []byte
+	Term                int
+	LastIncludedIndex   int
+	LastIncludedTerm    int
+	Data                []byte
+	ServerConfiguration map[ServerID][2]bool
+	OldServerCount      int
+	NewServerCount      int
 }
 
 type InstallSnapshotResponse struct {

@@ -58,10 +58,12 @@ type RaftLog struct {
 }
 
 type snapshot struct {
-	// TODO aggiungere stato delle connessioni
-	gameState         []byte
-	lastIncludedIndex int
-	lastIncludedTerm  int
+	serverConfiguration map[ServerID][2]bool
+	oldServerCount      int
+	newServerCount      int
+	gameState           []byte
+	lastIncludedIndex   int
+	lastIncludedTerm    int
 }
 
 // ServerID is the identification code for a raft server
@@ -644,7 +646,13 @@ func (_state *stateImpl) takeSnapshot() bool {
 		return false
 	}
 	log.Debug("Taking snapshot (arr: ", lastAppliedIdx, ", idx: ", _state.logs[lastAppliedIdx].Idx, ", term: ", _state.logs[lastAppliedIdx].Term, ")")
-	var newSnapshot = snapshot{currentGameState, _state.logs[lastAppliedIdx].Idx, _state.logs[lastAppliedIdx].Term}
+	var newSnapshot = snapshot{
+		_state.serverConfiguration,
+		_state.oldServerCount,
+		_state.newServerCount,
+		currentGameState,
+		_state.logs[lastAppliedIdx].Idx,
+		_state.logs[lastAppliedIdx].Term}
 	_state.lastSnapshot = &newSnapshot
 	// Copy remaining logs at the start of the log array
 	var restartIdx = 0
@@ -663,7 +671,10 @@ func (_state *stateImpl) prepareInstallSnapshotRPC() *InstallSnapshotArgs {
 		_state.currentTerm,
 		lastSnapshot.lastIncludedIndex,
 		lastSnapshot.lastIncludedTerm,
-		lastSnapshot.gameState}
+		lastSnapshot.gameState,
+		lastSnapshot.serverConfiguration,
+		lastSnapshot.oldServerCount,
+		lastSnapshot.newServerCount}
 	return &newInstallSnapshotArgs
 }
 
@@ -693,8 +704,13 @@ func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) 
 	}
 
 	// Apply snapshot
-	var newGameState = (*isa).Data
-	var newSnapshot = snapshot{newGameState, (*isa).LastIncludedIndex, (*isa).LastIncludedTerm}
+	var newSnapshot = snapshot{
+		(*isa).ServerConfiguration,
+		(*isa).OldServerCount,
+		(*isa).NewServerCount,
+		(*isa).Data,
+		(*isa).LastIncludedIndex,
+		(*isa).LastIncludedTerm}
 	_state.lastSnapshot = &newSnapshot
 	_state.nextLogArrayIdx = 0
 	return &InstallSnapshotResponse{_state.id, _state.currentTerm, true, (*isa).LastIncludedIndex, (*isa).LastIncludedTerm}

@@ -2,7 +2,6 @@ package engine
 
 import (
 	"encoding/json"
-	"fmt"
 	"go_raft/raft"
 	"math"
 	"math/rand"
@@ -151,7 +150,6 @@ func run(opt *engineOptions) {
 			jsonGameState, _ := json.Marshal(gameState)
 			(*opt).snapshotResponseChan <- jsonGameState
 		case newJsonState := <-(*opt).installSnapshotChan:
-			fmt.Println("engine: received snapshot to install")
 			json.Unmarshal(newJsonState, &gameState)
 		case newAction := <-(*opt).actionChan:
 			var playerID = PlayerID(newAction.Id)
