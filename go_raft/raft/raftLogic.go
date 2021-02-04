@@ -523,11 +523,21 @@ func handleLeader(opt *options) {
 			}
 		} else {
 			// Handle player game action (i.e. movement)
-			var ok = (*opt)._state.addNewGameLog(act.Msg)
-			if ok {
-				sendAppendEntriesRPCs(opt)
+			if act.Msg.ActionId > (*opt)._state.getServerLastActionApplied(ServerID(act.Msg.Id)) {
+				// In this case the action is new
+				var ok = (*opt)._state.addNewGameLog(act.Msg)
+				if ok {
+					sendAppendEntriesRPCs(opt)
+					go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
+				}
+			} else {
+				// The action has already been applied, respond immediately (cft. Raft paper section 8 p.13)
+				// Note: this only prevents actions to be applied twice, i.e. it will work with snapshots
+				// because the counter will be updated naturally when new messages arrive
 				go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
+				act.Msg.ChanApplied <- true
 			}
+
 		}
 	// Handle responses to AppendEntries
 	case appendEntriesResponse := <-(*opt).myAppendEntriesResponseChan:
@@ -585,6 +595,7 @@ func applyLog(opt *options, log RaftLog) {
 	// TODO remove player from game if disconnected
 	if log.Type == Game {
 		(*opt).actionChan <- log.Log
+		(*opt)._state.updateServerLastActionApplied(ServerID(log.Log.Id), log.Log.ActionId)
 	}
 	if (*opt)._state.getState() == Leader {
 		if log.Type == Game {

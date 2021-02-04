@@ -71,7 +71,7 @@ type ServerID string
 
 // StateImpl are structures containing the state for all servers
 type stateImpl struct {
-	// Implementation state
+	// TODO maybe we could aggregate all the server map into a map[ServerID]struct{...}
 	id                      ServerID
 	electionTimeoutStarted  bool
 	electionTimer           *time.Timer
@@ -79,26 +79,24 @@ type stateImpl struct {
 	currentElectionVotesOld int
 	lastSentLogIndex        map[ServerID]int
 	currentLeader           ServerID
-	// Persistent state
-	currentTerm     int
-	votedFor        ServerID
-	logs            [logArrayCapacity]RaftLog
-	nextLogArrayIdx int
-	lastSnapshot    *snapshot
-	// Volatile state
-	currentState instanceState
-	commitIndex  int
-	lastApplied  int
-	// These next entries are for leaders only
-	nextIndex             map[ServerID]int
-	matchIndex            map[ServerID]int
-	serverConfiguration   map[ServerID][2]bool
-	newServerCount        int
-	oldServerCount        int
-	newServerResponseChan map[ServerID]chan bool
-	lock                  *sync.Mutex
-	snapshotRequestChan   chan bool
-	snapshotResponseChan  chan []byte
+	currentTerm             int
+	votedFor                ServerID
+	logs                    [logArrayCapacity]RaftLog
+	nextLogArrayIdx         int
+	lastSnapshot            *snapshot
+	currentState            instanceState
+	commitIndex             int
+	lastApplied             int
+	nextIndex               map[ServerID]int
+	matchIndex              map[ServerID]int
+	serverConfiguration     map[ServerID][2]bool
+	serverLastActionApplied map[ServerID]int64
+	newServerCount          int
+	oldServerCount          int
+	newServerResponseChan   map[ServerID]chan bool
+	lock                    *sync.Mutex
+	snapshotRequestChan     chan bool
+	snapshotResponseChan    chan []byte
 }
 
 func newGameRaftLog(idx int, term int, log GameLog) RaftLog {
@@ -117,6 +115,7 @@ func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, 
 	var nextIndex = make(map[ServerID]int)
 	var matchIndex = make(map[ServerID]int)
 	var serverConfiguration = make(map[ServerID][2]bool)
+	var serverLastActionApplied = make(map[ServerID]int64)
 	var newServerResponseChan = make(map[ServerID]chan bool)
 	var lock = &sync.Mutex{}
 	return &stateImpl{
@@ -138,6 +137,7 @@ func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, 
 		nextIndex,
 		matchIndex,
 		serverConfiguration,
+		serverLastActionApplied,
 		0,
 		0,
 		newServerResponseChan,
@@ -177,6 +177,8 @@ type state interface {
 	prepareInstallSnapshotRPC() *InstallSnapshotArgs
 	handleInstallSnapshotResponse(*InstallSnapshotResponse) int
 	handleInstallSnapshotRequest(*InstallSnapshotArgs) *InstallSnapshotResponse
+	updateServerLastActionApplied(ServerID, int64)
+	getServerLastActionApplied(ServerID) int64
 }
 
 /* To start a new election a server:
@@ -594,6 +596,7 @@ func (_state *stateImpl) removeServer(sid ServerID) {
 	delete(_state.lastSentLogIndex, sid)
 	delete(_state.nextIndex, sid)
 	delete(_state.matchIndex, sid)
+	delete(_state.serverLastActionApplied, sid)
 	if _state.serverConfiguration[sid][0] {
 		_state.oldServerCount--
 	}
@@ -619,6 +622,9 @@ func (_state *stateImpl) updateServerConfiguration(sid ServerID, conf [2]bool) {
 	}
 	log.Debug("State: Update server configuration ", _state.serverConfiguration)
 	log.Debug(fmt.Sprintf("State: new: %d, old: %d", _state.newServerCount, _state.oldServerCount))
+	if _, found := _state.serverLastActionApplied[sid]; !found {
+		_state.serverLastActionApplied[sid] = -1
+	}
 	_state.lock.Unlock()
 }
 
@@ -714,4 +720,17 @@ func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) 
 	_state.lastSnapshot = &newSnapshot
 	_state.nextLogArrayIdx = 0
 	return &InstallSnapshotResponse{_state.id, _state.currentTerm, true, (*isa).LastIncludedIndex, (*isa).LastIncludedTerm}
+}
+
+func (_state *stateImpl) getServerLastActionApplied(sid ServerID) int64 {
+	_state.lock.Lock()
+	var result = _state.serverLastActionApplied[sid]
+	_state.lock.Unlock()
+	return result
+}
+
+func (_state *stateImpl) updateServerLastActionApplied(sid ServerID, idx int64) {
+	_state.lock.Lock()
+	_state.serverLastActionApplied[sid] = idx
+	_state.lock.Unlock()
 }
