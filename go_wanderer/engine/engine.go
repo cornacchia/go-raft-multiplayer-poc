@@ -2,7 +2,9 @@ package engine
 
 import (
 	"encoding/json"
+	"fmt"
 	"go_raft/raft"
+	"strconv"
 )
 
 const (
@@ -81,10 +83,10 @@ func checkCollisionWithOtherPlayers(playerID PlayerID, pos Position, state *Game
 	return result
 }
 
-func getActionTurnForNewPlayer(state *GameState) int {
-	var result = 0
+func getActionTurnFromSnapshot(state *GameState) int {
+	var result = -1
 	for _, value := range (*state).Players {
-		if result == 0 || value.LastActionTurn < result {
+		if value.LastActionTurn > result {
 			result = value.LastActionTurn
 		}
 	}
@@ -103,6 +105,28 @@ func checkIfTurnChanged(state *GameState) (bool, int) {
 		}
 	}
 	return result, turn
+}
+
+func generateDeterministicPlayerStartingPosition(playerID PlayerID, state *GameState) Position {
+	// There are MapWidth * MapHeight cells
+	var idPos, _ = strconv.Atoi(fmt.Sprint(playerID))
+	var nOfCells = MapWidth * MapHeight
+	if idPos < nOfCells {
+		idPos += nOfCells
+	}
+	var found = false
+	var position = Position{0, 0}
+	for !found {
+		idPos = idPos % nOfCells
+		position.X = idPos / MapWidth
+		position.Y = idPos % MapWidth
+		if checkCollisionWithOtherPlayers(playerID, position, state) {
+			idPos++
+		} else {
+			found = true
+		}
+	}
+	return position
 }
 
 func applyAction(state *GameState, playerID PlayerID, action ActionImpl, opt *engineOptions) {
@@ -143,7 +167,8 @@ func applyAction(state *GameState, playerID PlayerID, action ActionImpl, opt *en
 		(*state).Players[playerID] = PlayerState{position, action.Turn}
 	case REGISTER:
 		// Register new player
-		(*state).Players[playerID] = PlayerState{Position{0, 0}, action.Turn}
+		var newPosition = generateDeterministicPlayerStartingPosition(playerID, state)
+		(*state).Players[playerID] = PlayerState{newPosition, action.Turn}
 		if playerID == (*opt).playerID {
 			(*opt).currentTurnChan <- (*state).Players[playerID].LastActionTurn
 		}
@@ -164,6 +189,7 @@ func run(opt *engineOptions) {
 			(*opt).snapshotResponseChan <- jsonGameState
 		case newJsonState := <-(*opt).installSnapshotChan:
 			json.Unmarshal(newJsonState, &gameState)
+			(*opt).currentTurnChan <- getActionTurnFromSnapshot(&gameState)
 		case newAction := <-(*opt).actionChan:
 			var playerID = PlayerID(newAction.Id)
 			var action ActionImpl

@@ -2,9 +2,11 @@ package engine
 
 import (
 	"encoding/json"
+	"fmt"
 	"go_raft/raft"
 	"math"
 	"math/rand"
+	"strconv"
 )
 
 const (
@@ -95,8 +97,28 @@ func checkHitWall(x float64, y float64) bool {
 	return GameMap[int(x)][int(y)] == '#'
 }
 
-// This function modifies the state of the game
-// it will modify the state for performance
+func generateDeterministicPlayerStartingPosition(playerID PlayerID) Position {
+	var idPos, _ = strconv.Atoi(fmt.Sprint(playerID))
+	var mapHeight = len(GameMap)
+	var mapWidth = len(GameMap[0])
+	var nOfCells = mapHeight * mapWidth
+	if idPos < nOfCells {
+		idPos += nOfCells
+	}
+	var found = false
+	var position = Position{0, 0, 0}
+	for !found {
+		idPos = idPos % nOfCells
+		position.X = float64(idPos / mapWidth)
+		position.Y = float64(idPos % mapWidth)
+		if checkHitWall(position.X, position.Y) {
+			idPos++
+		} else {
+			found = true
+		}
+	}
+	return position
+}
 
 func applyAction(state *GameState, playerID PlayerID, action ActionImpl) {
 	var delta = 0.01
@@ -135,7 +157,8 @@ func applyAction(state *GameState, playerID PlayerID, action ActionImpl) {
 		(*state).Players[playerID] = PlayerState{(*state).Players[playerID].Spr, position}
 	case REGISTER:
 		// Register new player
-		(*state).Players[playerID] = PlayerState{rand.Intn(5), Position{2.0, 2.0, 0.0}}
+		var newPosition = generateDeterministicPlayerStartingPosition(playerID)
+		(*state).Players[playerID] = PlayerState{rand.Intn(5), newPosition}
 	}
 
 }
