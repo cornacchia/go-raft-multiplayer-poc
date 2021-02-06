@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"go_raft/raft"
 	"strconv"
+
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -93,13 +95,16 @@ func getActionTurnFromSnapshot(state *GameState) int {
 	return result
 }
 
-func checkIfTurnChanged(state *GameState) (bool, int) {
+func checkIfTurnChanged(opt *engineOptions, state *GameState) (bool, int) {
 	var result = true
 	var turn = -1
+	if value, found := (*state).Players[(*opt).playerID]; found {
+		turn = value.LastActionTurn
+	}
 	for _, value := range (*state).Players {
 		if turn < 0 {
 			turn = value.LastActionTurn
-		} else if value.LastActionTurn != turn {
+		} else if value.LastActionTurn < turn {
 			result = false
 			break
 		}
@@ -129,9 +134,19 @@ func generateDeterministicPlayerStartingPosition(playerID PlayerID, state *GameS
 	return position
 }
 
+func stateToString(state *GameState) string {
+	var result = ""
+	for id, value := range (*state).Players {
+		result += fmt.Sprint(id, " - ", value.LastActionTurn)
+		result += ", "
+	}
+	return result
+}
+
 func applyAction(state *GameState, playerID PlayerID, action ActionImpl, opt *engineOptions) {
 	playerData := (*state).Players[playerID]
 	var position = playerData.Pos
+	// log.Info("Apply log: ", playerID, " - ", action.Turn)
 	switch action.Action {
 	case UP:
 		// Move UP
@@ -173,7 +188,10 @@ func applyAction(state *GameState, playerID PlayerID, action ActionImpl, opt *en
 			(*opt).currentTurnChan <- (*state).Players[playerID].LastActionTurn
 		}
 	}
-	if changed, turn := checkIfTurnChanged(state); changed {
+	log.Info(stateToString(state))
+	changed, turn := checkIfTurnChanged(opt, state)
+	// log.Info(changed, turn)
+	if changed {
 		(*opt).currentTurnChan <- turn + 1
 	}
 }

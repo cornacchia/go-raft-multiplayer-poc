@@ -1,6 +1,10 @@
 package raft
 
-import "fmt"
+import (
+	"fmt"
+
+	log "github.com/sirupsen/logrus"
+)
 
 type AppendEntriesArgs struct {
 	Term         int
@@ -87,6 +91,9 @@ func (listener *RaftListener) AppendEntriesRPC(args *AppendEntriesArgs, reply *A
 	reply.Id = repl.Id
 	reply.Term = repl.Term
 	reply.Success = repl.Success
+	if len((*args).Entries) > 0 {
+		log.Trace("RPC: Received Append Entries RPC ", (*args).LeaderID, " ", len((*args).Entries), " ", repl.Success)
+	}
 	// TODO handle timeout
 	return nil
 }

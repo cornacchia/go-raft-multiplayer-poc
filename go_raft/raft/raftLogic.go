@@ -110,9 +110,11 @@ func ConnectToRaftServer(opt *options, serverPort ServerID, result chan *RaftCon
 			connected = true
 			if opt != nil {
 				(*opt)._state.addNewServer(serverPort)
+				log.Info("Raft - Connected to node: " + string(serverPort))
+			} else {
+				log.Info("Main - Connected to node: " + string(serverPort))
 			}
 
-			log.Info("Connected to node: " + string(serverPort))
 			var newConnection = RaftConnectionResponse{serverPort, client}
 			result <- &newConnection
 		}
@@ -401,6 +403,7 @@ func sendAppendEntriesRPCs(opt *options) {
 	})
 }
 
+// TODO gestire casi in cui la connessione è stata chiusa da fuori in modo sporco
 func sendInstallSnapshotRPC(opt *options, unvoting bool, id ServerID) {
 	log.Debug("Send install snapshot RPC to: ", id)
 	const installSnapshotTimeout time.Duration = 200
@@ -591,28 +594,29 @@ func handleLeader(opt *options) {
 	(*opt)._state.checkCommits()
 }
 
-func applyLog(opt *options, log RaftLog) {
+func applyLog(opt *options, raftLog RaftLog) {
+	log.Info("Raft apply log: ", raftLog.Idx)
 	// TODO remove player from game if disconnected
-	if log.Type == Game {
-		(*opt).actionChan <- log.Log
-		(*opt)._state.updateServerLastActionApplied(ServerID(log.Log.Id), log.Log.ActionId)
+	if raftLog.Type == Game {
+		(*opt).actionChan <- raftLog.Log
+		(*opt)._state.updateServerLastActionApplied(ServerID(raftLog.Log.Id), raftLog.Log.ActionId)
 	}
 	if (*opt)._state.getState() == Leader {
-		if log.Type == Game {
-			log.Log.ChanApplied <- true
-		} else if log.Type == Configuration {
-			// If a configuration change log is committed (OLD, NEW configuration), generate its closure
-			if log.ConfigurationLog.OldCount > 0 {
-				var add = log.ConfigurationLog.OldCount < log.ConfigurationLog.NewCount
+		if raftLog.Type == Game {
+			raftLog.Log.ChanApplied <- true
+		} else if raftLog.Type == Configuration {
+			// If a configuration change raftLog is committed (OLD, NEW configuration), generate its closure
+			if raftLog.ConfigurationLog.OldCount > 0 {
+				var add = raftLog.ConfigurationLog.OldCount < raftLog.ConfigurationLog.NewCount
 				connMap, newCount := finishConfigurationChange(opt, add)
-				var appliedChan = (*opt)._state.getNewServerResponseChan(log.ConfigurationLog.Id)
-				(*opt)._state.addNewConfigurationLog(ConfigurationLog{log.ConfigurationLog.Id, connMap, 0, newCount, appliedChan})
-			} else if log.ConfigurationLog.OldCount == 0 {
-				if log.ConfigurationLog.ChanApplied != nil {
-					log.ConfigurationLog.ChanApplied <- true
+				var appliedChan = (*opt)._state.getNewServerResponseChan(raftLog.ConfigurationLog.Id)
+				(*opt)._state.addNewConfigurationLog(ConfigurationLog{raftLog.ConfigurationLog.Id, connMap, 0, newCount, appliedChan})
+			} else if raftLog.ConfigurationLog.OldCount == 0 {
+				if raftLog.ConfigurationLog.ChanApplied != nil {
+					raftLog.ConfigurationLog.ChanApplied <- true
 				}
-				checkConnectionsToRemove(opt, log.ConfigurationLog.ConnMap)
-				(*opt)._state.removeNewServerResponseChan(log.ConfigurationLog.Id)
+				checkConnectionsToRemove(opt, raftLog.ConfigurationLog.ConnMap)
+				(*opt)._state.removeNewServerResponseChan(raftLog.ConfigurationLog.Id)
 			}
 		}
 	}
@@ -620,7 +624,7 @@ func applyLog(opt *options, log RaftLog) {
 
 func checkLogsToApply(opt *options) {
 	var idxToExec = (*opt)._state.updateLastApplied()
-	for idxToExec > 0 {
+	for idxToExec >= 0 {
 		applyLog(opt, (*opt)._state.getLog(idxToExec))
 		idxToExec = (*opt)._state.updateLastApplied()
 	}

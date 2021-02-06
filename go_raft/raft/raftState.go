@@ -282,16 +282,19 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new
 func (_state *stateImpl) winElection() {
 	_state.lock.Lock()
 	log.Debug("Become Leader")
-	var lastLogIdx, _ = _state.getLastLogIdxTerm()
+	//var lastLogIdx, _ = _state.getLastLogIdxTerm()
 	_state.currentElectionVotesOld = 0
 	_state.currentElectionVotesNew = 0
 	_state.currentState = Leader
 	_state.currentLeader = _state.id
 	for id := range _state.nextIndex {
-		_state.nextIndex[id] = lastLogIdx + 1
+		//_state.nextIndex[id] = lastLogIdx + 1
+		_state.nextIndex[id] = 0
 	}
-	_state.matchIndex[_state.id] = lastLogIdx
-	_state.lastSentLogIndex[_state.id] = lastLogIdx
+	//_state.matchIndex[_state.id] = lastLogIdx
+	//_state.lastSentLogIndex[_state.id] = lastLogIdx
+	_state.matchIndex[_state.id] = -1
+	_state.lastSentLogIndex[_state.id] = -1
 	_state.lock.Unlock()
 }
 
@@ -318,7 +321,7 @@ func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
 	var myLastLogIdx, myLastLogTerm = _state.getLastLogIdxTerm()
 	// Check if the next log for this server is in the log array or in a snapshot
 	var serverNextIdx = _state.nextIndex[id]
-	var found, _, arrayLogIdx = _state.findArrayIndexByLogIndex(serverNextIdx)
+	var found, arrayLogIdx = _state.findArrayIndexByLogIndex(serverNextIdx)
 	if !found && serverNextIdx <= myLastLogIdx {
 		// The log is in a snapshot
 		_state.lock.Unlock()
@@ -344,6 +347,7 @@ func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
 	// Keep track of the last log actually sent to a follower
 	if len(logsToSend) > 0 {
 		_state.lastSentLogIndex[id] = logsToSend[len(logsToSend)-1].Idx
+		log.Trace(fmt.Sprintf("Sending %d logs to node %s (start: %d, end: %d)", len(logsToSend), id, logsToSend[0].Idx, logsToSend[len(logsToSend)-1].Idx))
 	} else {
 		_state.lastSentLogIndex[id] = serverNextIdx - 1
 	}
@@ -391,9 +395,8 @@ func (_state *stateImpl) addNewConfigurationLog(conf ConfigurationLog) bool {
 	return true
 }
 
-func (_state *stateImpl) findArrayIndexByLogIndex(idx int) (bool, bool, int) {
+func (_state *stateImpl) findArrayIndexByLogIndex(idx int) (bool, int) {
 	var found = false
-	var snapshot = false
 	var result = -1
 	for i := _state.nextLogArrayIdx - 1; i >= 0 && !found; i-- {
 		if _state.logs[i].Idx == idx {
@@ -401,12 +404,8 @@ func (_state *stateImpl) findArrayIndexByLogIndex(idx int) (bool, bool, int) {
 			result = i
 		}
 	}
-	if !found && _state.lastSnapshot != nil {
-		if (*_state.lastSnapshot).lastIncludedIndex == idx {
-			snapshot = true
-		}
-	}
-	return found, snapshot, result
+
+	return found, result
 }
 
 func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntriesResponse {
@@ -430,20 +429,16 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 	}
 
 	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
-	var found, snapshot, prevLogIdx = _state.findArrayIndexByLogIndex((*aea).PrevLogIndex)
+	var found, prevLogIdx = _state.findArrayIndexByLogIndex((*aea).PrevLogIndex)
 	if !found {
-		if _state.lastSnapshot == nil || (*_state.lastSnapshot).lastIncludedTerm != (*aea).PrevLogTerm {
+		// If we didn't find the previous log index it may be included in the last snapshot
+		// so we check if there exists a last snapshot and if it includes the previous log index
+		if _state.lastSnapshot == nil || (*_state.lastSnapshot).lastIncludedIndex < (*aea).PrevLogIndex {
 			return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
 		}
 	} else {
-		if snapshot {
-			if (*_state.lastSnapshot).lastIncludedTerm != (*aea).PrevLogTerm {
-				return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
-			}
-		} else {
-			if _state.logs[prevLogIdx].Term != (*aea).PrevLogTerm {
-				return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
-			}
+		if _state.logs[prevLogIdx].Term != (*aea).PrevLogTerm {
+			return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
 		}
 	}
 
@@ -462,7 +457,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 			return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
 		}
 	}
-	_, _, prevLogIdx = _state.findArrayIndexByLogIndex((*aea).PrevLogIndex)
+	_, prevLogIdx = _state.findArrayIndexByLogIndex((*aea).PrevLogIndex)
 	startNextIdx = prevLogIdx + 1
 	if startNextIdx+len((*aea).Entries) >= logArrayCapacity {
 		return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
@@ -474,12 +469,15 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 		if nextIdx >= _state.nextLogArrayIdx {
 			_state.logs[nextIdx] = (*aea).Entries[i]
 			_state.nextLogArrayIdx = nextIdx + 1
+			log.Trace(fmt.Sprintf("State - add raft log (type: %d, idx: %d, arr: %d)\n", (*aea).Entries[i].Type, (*aea).Entries[i].Idx, nextIdx))
 		} else {
-			// If the terms conflict remove all the remaining logs
-			if _state.logs[nextIdx].Term != (*aea).Entries[i].Term {
+			// If the terms conflict (different index or same index and different terms) remove all the remaining logs
+			if _state.logs[nextIdx].Idx != (*aea).Entries[i].Idx || _state.logs[nextIdx].Term != (*aea).Entries[i].Term {
 				_state.logs[nextIdx] = (*aea).Entries[i]
 				_state.nextLogArrayIdx = nextIdx + 1
+				log.Trace(fmt.Sprintf("State - add raft log (type: %d, idx: %d, arr: %d)\n", (*aea).Entries[i].Type, (*aea).Entries[i].Idx, nextIdx))
 			}
+			// Otherwise we should be confident that the logs are the same and need not be replaced
 		}
 	}
 	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
@@ -514,8 +512,11 @@ func (_state *stateImpl) handleAppendEntriesResponse(aer *AppendEntriesResponse)
 
 func (_state *stateImpl) updateLastApplied() int {
 	if _state.commitIndex > _state.lastApplied {
-		_state.lastApplied++
-		var _, _, logIdx = _state.findArrayIndexByLogIndex(_state.lastApplied)
+		var _, logIdx = _state.findArrayIndexByLogIndex(_state.lastApplied + 1)
+		if logIdx >= 0 {
+			_state.lastApplied++
+		}
+		log.Info(fmt.Sprintf("State: update last applied (log: %d, arr: %d)\n", _state.lastApplied, logIdx))
 		return logIdx
 	}
 	return -1
@@ -644,14 +645,24 @@ func (_state *stateImpl) getNewServerResponseChan(id ServerID) chan bool {
 	return _state.newServerResponseChan[id]
 }
 
+func (_state *stateImpl) copyLogsToBeginningOfRecord(startLog int) {
+	var restartIdx = 0
+	for startLog+restartIdx < _state.nextLogArrayIdx {
+		log.Trace("Copy log from ", startLog+restartIdx, "(", _state.logs[startLog+restartIdx].Idx, ")", "to ", restartIdx)
+		_state.logs[restartIdx] = _state.logs[startLog+restartIdx]
+		restartIdx++
+	}
+	_state.nextLogArrayIdx = restartIdx
+}
+
 func (_state *stateImpl) takeSnapshot() bool {
 	_state.snapshotRequestChan <- true
 	currentGameState := <-_state.snapshotResponseChan
-	var found, _, lastAppliedIdx = _state.findArrayIndexByLogIndex(_state.lastApplied)
+	var found, lastAppliedIdx = _state.findArrayIndexByLogIndex(_state.lastApplied)
 	if !found {
 		return false
 	}
-	log.Debug("Taking snapshot (arr: ", lastAppliedIdx, ", idx: ", _state.logs[lastAppliedIdx].Idx, ", term: ", _state.logs[lastAppliedIdx].Term, ")")
+	log.Trace("Taking snapshot (arr: ", lastAppliedIdx, ", idx: ", _state.logs[lastAppliedIdx].Idx, ", term: ", _state.logs[lastAppliedIdx].Term, ")")
 	var newSnapshot = snapshot{
 		_state.serverConfiguration,
 		_state.oldServerCount,
@@ -661,13 +672,7 @@ func (_state *stateImpl) takeSnapshot() bool {
 		_state.logs[lastAppliedIdx].Term}
 	_state.lastSnapshot = &newSnapshot
 	// Copy remaining logs at the start of the log array
-	var restartIdx = 0
-	for lastAppliedIdx+1+restartIdx < _state.nextLogArrayIdx {
-		log.Trace("Copy log from ", lastAppliedIdx+1+restartIdx, "(", _state.logs[lastAppliedIdx+1+restartIdx].Idx, ")", "to ", restartIdx)
-		_state.logs[restartIdx] = _state.logs[lastAppliedIdx+1+restartIdx]
-		restartIdx++
-	}
-	_state.nextLogArrayIdx = restartIdx
+	_state.copyLogsToBeginningOfRecord(lastAppliedIdx + 1)
 	return true
 }
 
@@ -702,12 +707,30 @@ func (_state *stateImpl) handleInstallSnapshotResponse(isr *InstallSnapshotRespo
 	return _state.matchIndex[(*isr).Id]
 }
 
+func (_state *stateImpl) checkIfSnapshotShouldBeInstalled(isa *InstallSnapshotArgs) bool {
+	var result = true
+	if (*isa).Term < _state.currentTerm {
+		// Do not install snapshots for obsolete terms
+		result = false
+	} else if _state.lastSnapshot != nil {
+		// Do not install snapshots more than once or overwrite greater snapshots
+		if (*isa).LastIncludedIndex <= _state.lastSnapshot.lastIncludedIndex && (*isa).LastIncludedTerm <= _state.lastSnapshot.lastIncludedTerm {
+			result = false
+		}
+	}
+	return result
+}
+
 func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) *InstallSnapshotResponse {
 	log.Debug("Received install snapshot request")
-	// Respond immediately if rpc term < currentTerm&installSnapshotResponse
-	if (*isa).Term < _state.currentTerm {
+	if !_state.checkIfSnapshotShouldBeInstalled(isa) {
 		return &InstallSnapshotResponse{_state.id, _state.currentTerm, false, -1, -1}
 	}
+
+	// var lastLogIdx = -1
+	//if _state.nextLogArrayIdx > 0 {
+	//	lastLogIdx = _state.logs[_state.nextLogArrayIdx-1].Idx
+	//}
 
 	// Apply snapshot
 	var newSnapshot = snapshot{
@@ -718,7 +741,32 @@ func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) 
 		(*isa).LastIncludedIndex,
 		(*isa).LastIncludedTerm}
 	_state.lastSnapshot = &newSnapshot
+
 	_state.nextLogArrayIdx = 0
+	_state.commitIndex = (*isa).LastIncludedIndex
+	_state.lastApplied = (*isa).LastIncludedIndex
+	/*
+		if (*isa).LastIncludedIndex >= lastLogIdx {
+			_state.nextLogArrayIdx = 0
+			_state.commitIndex = (*isa).LastIncludedIndex
+			_state.lastApplied = (*isa).LastIncludedIndex
+		} else {
+			var found, lastIncludedIdx = _state.findArrayIndexByLogIndex((*isa).LastIncludedIndex)
+			if found {
+				_state.copyLogsToBeginningOfRecord(lastIncludedIdx + 1)
+			}
+
+			if _state.commitIndex < (*isa).LastIncludedIndex {
+				_state.commitIndex = (*isa).LastIncludedIndex
+			}
+			if _state.lastApplied < (*isa).LastIncludedIndex {
+				_state.lastApplied = (*isa).LastIncludedIndex
+			}
+
+		}
+	*/
+
+	log.Info("State: install snapshot ", (*isa).LastIncludedIndex)
 	return &InstallSnapshotResponse{_state.id, _state.currentTerm, true, (*isa).LastIncludedIndex, (*isa).LastIncludedTerm}
 }
 

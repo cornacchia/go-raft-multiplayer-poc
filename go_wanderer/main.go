@@ -63,7 +63,10 @@ func handleCurrentTurn(currentTurnEngineChan chan int, currentTurnUIChan chan in
 	for {
 		select {
 		case newTurn := <-currentTurnEngineChan:
-			currentTurn = newTurn
+			if newTurn > currentTurn {
+				currentTurn = newTurn
+				log.Info("New turn: ", currentTurn)
+			}
 		case <-currentTurnUIChan:
 			currentTurnUIChan <- currentTurn
 		}
@@ -101,7 +104,7 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConn
 		// Send again
 		newConnectionChan <- (*opt).id
 		// TODO proviamo a non rimandare per vedere se evita memory leak
-		//(*opt).actionChan <- msg
+		(*opt).actionChan <- msg
 	}
 }
 
@@ -111,6 +114,7 @@ func manageActions(opt *options) {
 	for {
 		select {
 		case msg := <-(*opt).actionChan:
+			log.Trace("Sending action for turn: ", msg.Action.Turn)
 			var timestamp = getNowMs()
 			var actionResponse raft.ActionResponse
 			var jsonAction, _ = json.Marshal(msg.Action)
@@ -120,10 +124,10 @@ func manageActions(opt *options) {
 			actionCall := raftConn.Connection.Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
 			go handleActionResponse(actionCall, &actionResponse, newConnectionID, msg, timestamp, opt)
 		case newLeaderID := <-newConnectionID:
-			log.Trace("Main: New leader id ", newLeaderID)
 			currentConnection = newLeaderID
 			var _, found = (*(*opt).connections).Load(currentConnection)
 			if !found {
+				log.Info("Need to connect to new leader: ", newLeaderID)
 				resultChan := make(chan *raft.RaftConnectionResponse)
 				go raft.ConnectToRaftServer(nil, currentConnection, resultChan)
 				var resp = <-resultChan
@@ -147,7 +151,7 @@ func main() {
 	// Seed random number generator
 	rand.Seed(time.Now().UnixNano())
 
-	log.SetLevel(log.DebugLevel)
+	log.SetLevel(log.InfoLevel)
 
 	termChan := make(chan os.Signal)
 	signal.Notify(termChan, syscall.SIGTERM, syscall.SIGINT)
@@ -233,8 +237,9 @@ func main() {
 	<-termChan
 	log.Info("Shutting down...")
 	uiActionChan <- engine.GameLog{playerID, ui.GetActionID(), "Disconnect", engine.ActionImpl{engine.DISCONNECT, 0}}
+
 	select {
 	case <-mainDisconnectedChan:
-	case <-time.After(time.Millisecond * 2000):
+	case <-time.After(time.Millisecond * 5000):
 	}
 }

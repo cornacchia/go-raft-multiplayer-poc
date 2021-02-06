@@ -91,7 +91,7 @@ func botBehavior(opt *uiOptions) {
 				currentTurn = newTurn
 			}
 		}
-		time.Sleep(time.Millisecond * 200)
+		time.Sleep(time.Millisecond * 100)
 	}
 }
 
