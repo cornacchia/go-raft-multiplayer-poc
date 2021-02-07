@@ -3,6 +3,7 @@ module.exports.regex = {
 
   // log regex
   time: /time="(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}.\d{6})"/,
+  listenerUp: /Raft listener up on port: (\d+)/, // node id
   connectedToNode: /Raft - Connected to node: (\d+)/, // node id
   sendAppendEntriesRPC: /Sending AppendEntriesRPC: (\d+) (\d+) (\d+)/, // node id, first included index, last included index
   respondAppendEntriesRPC: /Respond to AppendEntriesRPC: (\d+) (.*)/, // leader id, success
@@ -12,7 +13,7 @@ module.exports.regex = {
   respondInstallSnapshotRPC: /Respond to InstallSnapshotRPC: (\d+) (.*)/, // node id, success
   becomeFollower: /Become Follower/,
   becomeCandidate: /Become Candidate/,
-  becomeLeader: /Become Leader/,
+  becomeLeader: /Become Leader: (\d+)/, // current term
   applyLog: /Raft apply log: (\d+)/,
   shuttingDown: /Shutting down/
 }
