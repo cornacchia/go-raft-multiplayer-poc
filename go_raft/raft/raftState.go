@@ -281,7 +281,7 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new
 
 func (_state *stateImpl) winElection() {
 	_state.lock.Lock()
-	log.Info("Become Leader")
+	log.Info("Become Leader: ", _state.currentTerm)
 	//var lastLogIdx, _ = _state.getLastLogIdxTerm()
 	_state.currentElectionVotesOld = 0
 	_state.currentElectionVotesNew = 0

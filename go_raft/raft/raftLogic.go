@@ -163,7 +163,7 @@ func startListeningServer(raftListener *RaftListener, port string) {
 		log.Fatal("listen error:", err)
 	}
 	go http.Serve(listener, nil)
-	log.Debug(fmt.Sprintf("Raft listener up on port %s \n", port))
+	log.Info("Raft listener up on port: ", port)
 }
 
 func sendRequestVoteRPCs(opt *options, requestVoteArgs *RequestVoteArgs) {
