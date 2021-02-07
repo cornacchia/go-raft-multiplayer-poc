@@ -316,6 +316,19 @@ func (_state *stateImpl) getLastLogIdxTerm() (int, int) {
 	return (*_state.lastSnapshot).lastIncludedIndex, (*_state.lastSnapshot).lastIncludedTerm
 }
 
+func (_state *stateImpl) findArrayIndexByLogIndex(idx int) (bool, int) {
+	var found = false
+	var result = -1
+	for i := _state.nextLogArrayIdx - 1; i >= 0 && !found; i-- {
+		if _state.logs[i].Idx == idx {
+			found = true
+			result = i
+		}
+	}
+
+	return found, result
+}
+
 func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
 	_state.lock.Lock()
 	var myLastLogIdx, myLastLogTerm = _state.getLastLogIdxTerm()
@@ -393,19 +406,6 @@ func (_state *stateImpl) addNewConfigurationLog(conf ConfigurationLog) bool {
 	_state.nextIndex[_state.id] = newLog.Idx + 1
 	_state.lock.Unlock()
 	return true
-}
-
-func (_state *stateImpl) findArrayIndexByLogIndex(idx int) (bool, int) {
-	var found = false
-	var result = -1
-	for i := _state.nextLogArrayIdx - 1; i >= 0 && !found; i-- {
-		if _state.logs[i].Idx == idx {
-			found = true
-			result = i
-		}
-	}
-
-	return found, result
 }
 
 func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntriesResponse {
@@ -712,12 +712,12 @@ func (_state *stateImpl) checkIfSnapshotShouldBeInstalled(isa *InstallSnapshotAr
 	if (*isa).Term < _state.currentTerm {
 		// Do not install snapshots for obsolete terms
 		result = false
-	} else if _state.lastSnapshot != nil {
-		// Do not install snapshots more than once or overwrite greater snapshots
-		if (*isa).LastIncludedIndex <= _state.lastSnapshot.lastIncludedIndex && (*isa).LastIncludedTerm <= _state.lastSnapshot.lastIncludedTerm {
-			result = false
-		}
-	}
+	} //else if _state.lastSnapshot != nil {
+	// Do not install snapshots more than once or overwrite greater snapshots
+	//if (*isa).LastIncludedIndex <= _state.lastSnapshot.lastIncludedIndex && (*isa).LastIncludedTerm <= _state.lastSnapshot.lastIncludedTerm {
+	//	result = false
+	//}
+	//}
 	return result
 }
 

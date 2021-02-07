@@ -97,9 +97,7 @@ func analyzeNodeBehavior(node int) {
 		if matchSnapshotIdx != nil {
 			var newRaftLogReceived, _ = strconv.Atoi(matchSnapshotIdx[1])
 			// fmt.Printf("Node %d installed snapshot %d \n", node, newRaftLogReceived)
-			if newRaftLogReceived > lastRaftLogReceived {
-				lastRaftLogReceived = newRaftLogReceived
-			}
+			lastRaftLogReceived = newRaftLogReceived
 		}
 		if matchNewTurn != nil {
 			var newTurn, _ = strconv.Atoi(matchNewTurn[1])
