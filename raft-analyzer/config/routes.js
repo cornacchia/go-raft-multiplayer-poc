@@ -30,6 +30,6 @@ module.exports.routes = {
   * not match any of those, it is matched against static assets.             *
   *                                                                          *
   ***************************************************************************/
-
-
+  'GET /': { view: 'pages/homepage' },
+  'POST /loadLogs': { action: 'logs/load' }
 };

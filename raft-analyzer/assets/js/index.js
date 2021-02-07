@@ -1,14 +1,16 @@
 import 'bootstrap'
 import 'bootstrap/dist/css/bootstrap.min.css';
 import _ from 'lodash'
+const $ = require('jquery')
 
-function component() {
-  const element = document.createElement('div')
-
-  // Lodash, currently included via a script, is required for this line to work
-  element.innerHTML = _.join(['Hello', 'world'], ' ')
-
-  return element;
+function loadAndAnalyzeLogs() {
+  const raftLogFolder = $("#raft-log-folder").val()
+  const collectionName = $("#db-collection").val()
+  $.post('/loadLogs', {raftLogFolder, collectionName})
 }
 
-document.body.appendChild(component())
+function start() {
+  $("#loadAndAnalyzeLogs").on('click', loadAndAnalyzeLogs)
+}
+
+start()
