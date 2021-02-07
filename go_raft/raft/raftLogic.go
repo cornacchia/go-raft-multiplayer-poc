@@ -363,7 +363,7 @@ func handleCandidate(opt *options) {
 
 func appendEntriesRPCAction(opt *options, appendEntriesArgs *AppendEntriesArgs, appendEntriesTimeout time.Duration, id interface{}, connection interface{}) bool {
 	if len((*appendEntriesArgs).Entries) > 0 {
-		log.Info("Sending AppendEntriesRPC: ", id, " ", (*appendEntriesArgs).Entries[0].Idx, " ", (*appendEntriesArgs).Entries[len((*appendEntriesArgs).Entries)-1])
+		log.Info("Sending AppendEntriesRPC: ", id, " ", (*appendEntriesArgs).Entries[0].Idx, " ", (*appendEntriesArgs).Entries[len((*appendEntriesArgs).Entries)-1].Idx)
 	}
 	var appendEntriesResponse AppendEntriesResponse
 	var raftConn = connection.(RaftConnection)

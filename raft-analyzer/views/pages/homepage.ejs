@@ -2,6 +2,7 @@
 <!-- INPUT ROW -->
 <div class="row">
   <div class="col-6">
+    <h2>Load and analyze new logs</h2>
     <form>
       <div class="mb-3">
         <label for="raft-log-folder" class="form-label">Insert the path of a folder containing Raft logs</label>
@@ -11,11 +12,59 @@
         <label for="db-collection" class="form-label">Insert a db collection name for the collected logs</label>
         <input type="string" class="form-control" id="db-collection" placeholder="">
       </div>
-      <button id="loadAndAnalyzeLogs" type="button" class="btn btn-primary">Load and analyze logs</button>
+      <button id="loadAndAnalyzeLogs" type="button" class="btn btn-success">Load and analyze logs</button>
+      <span id="loadingMsg" hidden><i class="fas fa-spinner fa-spin"></i> Loading and indexing logs, this could take a while...</span>
+      <span id="errorMsg" class="text-danger" hidden></span>
+      <span id="okMsg" class="text-success" hidden><i class="fas fa-check"></i> Logs loaded correctly, select a collection to start inspection</span>
     </form>
   </div>
 </div>
 
+<!-- COLLECTION SELECT ROW -->
 <div class="row">
+  <div class="col-6">
+    <h2>Select existing log collection</h2>
+    <select id="collectionSelect" class="form-control"></select>
+  </div>
+</div>
 
+<hr />
+
+<!-- RAFT VIEW -->
+<div class="row">
+  <!-- NODE LIST-->
+  <div class="col-3">
+    <ul id="nodeList" class="list-group">
+    </ul>
+  </div>
+  <div  class="col-9">
+    <!-- COMMANDS -->
+    <div class="row">
+      <div class="col-3">
+        <div class="input-group mb-3">
+          <div class="input-group-prepend">
+            <button id="prevLog" class="btn btn-outline-secondary" type="button"><i class="fas fa-arrow-left"></i></button>
+            <button id="nextLog" class="btn btn-outline-secondary" type="button"><i class="fas fa-arrow-right"></i></button>
+          </div>
+          <input id="currentIdx" type="number" class="form-control">
+          <div class="input-group-append">
+            <span id="nOfDocs" class="input-group-text"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- NETWORK VIEW -->
+    <div class="row">
+      <div class="col-12">
+        <div id="networkView"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="row">
+  <!-- LOG LIST -->
+  <div class="col-12">
+    <ul id="logList" class="list-group">
+    </ul>
+  </div>
 </div>

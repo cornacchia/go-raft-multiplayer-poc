@@ -17,6 +17,18 @@ function getState () {
   }
 }
 
+async function getCollections() {
+  try {
+    collections = await sails.getDatastore().manager.listCollections().toArray()
+  } catch (err) {
+    error = "Could not get list of database collections"
+    sails.log.error(error, err)
+    return err
+  }
+
+  return collections.map(col => col.name)
+}
+
 async function assignIndexesToLogs(collection) {
   sails.log.debug(logHeader + 'Assign indexes to logs (this can take a while...)')
   let idx = 0
@@ -40,6 +52,7 @@ async function assignIndexesToLogs(collection) {
   jobQueue.drain(() => {
     loadingLogs = false
     sails.log.debug(logHeader + 'Done')
+    error = ""
   })
 }
 
@@ -221,17 +234,6 @@ async function loadLogsIntoCollection(dirPath, collection) {
   assignIndexesToLogs(collection)
 }
 
-function findCollection(collections, collection) {
-  let found = false
-  for (const coll of collections) {
-    if (coll.name === collection) {
-      found = true
-      break
-    }
-  }
-  return found
-}
-
 async function loadLogs(dirPath, collection) {
   sails.log.info(logHeader + 'Loading raft logs from ' + dirPath + ' into collection ' + collection)
   loadingLogs = true
@@ -241,17 +243,9 @@ async function loadLogs(dirPath, collection) {
     return Error(error)
   }
 
-  let collections
+  const collections = await getCollections()
 
-  try {
-    collections = await sails.getDatastore().manager.listCollections().toArray()
-  } catch (err) {
-    error = "Could not get list of database collections"
-    sails.log.error(error, err)
-    return err
-  }
-
-  if (findCollection(collections, collection)) {
+  if (collections.includes(collection)) {
     sails.log.info(logHeader + 'Collection ' + collection + ' already exists in database, will drop it')
     try {
       await sails.getDatastore().manager.dropCollection(collection)
@@ -270,6 +264,7 @@ module.exports = function defineDbHook (sailsInstance) {
 
   return {
     getState,
-    loadLogs
+    loadLogs,
+    getCollections
   }
 }

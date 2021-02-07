@@ -31,5 +31,8 @@ module.exports.routes = {
   *                                                                          *
   ***************************************************************************/
   'GET /': { view: 'pages/homepage' },
-  'POST /loadLogs': { action: 'logs/load' }
+  'POST /loadLogs': { action: 'logs/load' },
+  'GET /state': { action: 'state/get' },
+  'POST /setCollection': { action: 'logs/set-collection' },
+  'POST /simulateLog': { action: 'logs/simulate-log' }
 };

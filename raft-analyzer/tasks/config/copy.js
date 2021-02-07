@@ -18,6 +18,11 @@ module.exports = function(grunt) {
         cwd: './assets',
         src: ['**/*.!(coffee|less)'],
         dest: '.tmp/public'
+      }, {
+        expand: true,
+        cwd: 'node_modules/@fortawesome/fontawesome-free/webfonts/',
+        src: ['**/*.woff', '**/*.woff2', '**/*.ttf'],
+        dest: '.tmp/public/webfonts/'
       }]
     },
     build: {
