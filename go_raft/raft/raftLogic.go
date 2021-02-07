@@ -112,7 +112,7 @@ func ConnectToRaftServer(opt *options, serverPort ServerID, result chan *RaftCon
 				(*opt)._state.addNewServer(serverPort)
 				log.Info("Raft - Connected to node: " + string(serverPort))
 			} else {
-				log.Info("Main - Connected to node: " + string(serverPort))
+				log.Debug("Main - Connected to node: " + string(serverPort))
 			}
 
 			var newConnection = RaftConnectionResponse{serverPort, client}
@@ -163,7 +163,7 @@ func startListeningServer(raftListener *RaftListener, port string) {
 		log.Fatal("listen error:", err)
 	}
 	go http.Serve(listener, nil)
-	log.Info(fmt.Sprintf("Raft listener up on port %s \n", port))
+	log.Debug(fmt.Sprintf("Raft listener up on port %s \n", port))
 }
 
 func sendRequestVoteRPCs(opt *options, requestVoteArgs *RequestVoteArgs) {
@@ -172,6 +172,7 @@ func sendRequestVoteRPCs(opt *options, requestVoteArgs *RequestVoteArgs) {
 		if id.(ServerID) == (*opt)._state.getID() {
 			return true
 		}
+		log.Info("Sending RequestVoteRPC: ", id)
 		var requestVoteResponse RequestVoteResponse
 		var raftConn = connection.(RaftConnection)
 		requestVoteCall := raftConn.Connection.Go("RaftListener.RequestVoteRPC", requestVoteArgs, &requestVoteResponse, nil)
@@ -361,6 +362,9 @@ func handleCandidate(opt *options) {
 }
 
 func appendEntriesRPCAction(opt *options, appendEntriesArgs *AppendEntriesArgs, appendEntriesTimeout time.Duration, id interface{}, connection interface{}) bool {
+	if len((*appendEntriesArgs).Entries) > 0 {
+		log.Info("Sending AppendEntriesRPC: ", id, " ", (*appendEntriesArgs).Entries[0].Idx, " ", (*appendEntriesArgs).Entries[len((*appendEntriesArgs).Entries)-1])
+	}
 	var appendEntriesResponse AppendEntriesResponse
 	var raftConn = connection.(RaftConnection)
 	appendEntriesCall := raftConn.Connection.Go("RaftListener.AppendEntriesRPC", appendEntriesArgs, &appendEntriesResponse, nil)
@@ -405,10 +409,10 @@ func sendAppendEntriesRPCs(opt *options) {
 
 // TODO gestire casi in cui la connessione è stata chiusa da fuori in modo sporco
 func sendInstallSnapshotRPC(opt *options, unvoting bool, id ServerID) {
-	log.Debug("Send install snapshot RPC to: ", id)
 	const installSnapshotTimeout time.Duration = 200
 	var installSnapshotResponse InstallSnapshotResponse
 	var installSnapshotArgs = (*opt)._state.prepareInstallSnapshotRPC()
+	log.Info("Sending InstallSnapshotRPC: ", id, " ", (*installSnapshotArgs).LastIncludedIndex)
 	var connection interface{}
 	if unvoting {
 		connection, _ = (*opt).unvotingConnections.Load(id)

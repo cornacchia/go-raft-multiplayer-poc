@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"go_raft/raft"
 	"strconv"
-
-	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -188,7 +186,7 @@ func applyAction(state *GameState, playerID PlayerID, action ActionImpl, opt *en
 			(*opt).currentTurnChan <- (*state).Players[playerID].LastActionTurn
 		}
 	}
-	log.Info(stateToString(state))
+	//log.Info(stateToString(state))
 	changed, turn := checkIfTurnChanged(opt, state)
 	// log.Info(changed, turn)
 	if changed {

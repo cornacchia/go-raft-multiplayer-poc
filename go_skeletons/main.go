@@ -136,6 +136,9 @@ func main() {
 	rand.Seed(time.Now().UnixNano())
 
 	log.SetLevel(log.DebugLevel)
+	customFormatter := new(log.TextFormatter)
+	customFormatter.TimestampFormat = "2006-01-02 15:04:05.000000"
+	log.SetFormatter(customFormatter)
 
 	termChan := make(chan os.Signal)
 	signal.Notify(termChan, syscall.SIGTERM, syscall.SIGINT)
@@ -215,7 +218,7 @@ func main() {
 
 	connectedChan <- true
 	<-termChan
-	log.Info("Shutting down...")
+	log.Info("Shutting down")
 	uiActionChan <- engine.GameLog{playerID, ui.GetActionID(), "Disconnect", engine.ActionImpl{engine.DISCONNECT}}
 	select {
 	case <-mainDisconnectedChan:

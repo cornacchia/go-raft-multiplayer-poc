@@ -35,6 +35,7 @@ type RequestVoteResponse struct {
 }
 
 type InstallSnapshotArgs struct {
+	Id                  ServerID
 	Term                int
 	LastIncludedIndex   int
 	LastIncludedTerm    int
@@ -92,7 +93,7 @@ func (listener *RaftListener) AppendEntriesRPC(args *AppendEntriesArgs, reply *A
 	reply.Term = repl.Term
 	reply.Success = repl.Success
 	if len((*args).Entries) > 0 {
-		log.Trace("RPC: Received Append Entries RPC ", (*args).LeaderID, " ", len((*args).Entries), " ", repl.Success)
+		log.Info("Respond to AppendEntriesRPC: ", (*args).LeaderID, " ", repl.Success)
 	}
 	// TODO handle timeout
 	return nil
@@ -104,7 +105,7 @@ func (listener *RaftListener) RequestVoteRPC(args *RequestVoteArgs, reply *Reque
 	reply.Id = repl.Id
 	reply.Term = repl.Term
 	reply.VoteGranted = repl.VoteGranted
-
+	log.Info("Respond to RequestVoteRPC: ", (*args).CandidateID, " ", repl.VoteGranted)
 	return nil
 }
 
@@ -129,6 +130,7 @@ func (listener *RaftListener) InstallSnapshotRPC(args *InstallSnapshotArgs, repl
 	reply.Success = repl.Success
 	reply.LastIncludedIndex = repl.LastIncludedIndex
 	reply.LastIncludedTerm = repl.LastIncludedTerm
+	log.Info("Respond to InstallSnapshotRPC: ", (*args).Id, " ", repl.Success)
 	// TODO handle timeout
 	return nil
 }

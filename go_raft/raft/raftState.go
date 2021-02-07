@@ -187,7 +187,7 @@ type state interface {
  * 3. Votes for itself
  */
 func (_state *stateImpl) startElection() {
-	log.Debug("Become Candidate")
+	log.Info("Become Candidate")
 	_state.currentTerm++
 	_state.currentState = Candidate
 	_state.votedFor = _state.id
@@ -234,7 +234,7 @@ func (_state *stateImpl) handleRequestToVote(rva *RequestVoteArgs) *RequestVoteR
 		return &RequestVoteResponse{_state.id, _state.currentTerm, false}
 	} else if (*rva).Term == _state.currentTerm && (_state.votedFor == "" || _state.votedFor == (*rva).CandidateID) && (*rva).LastLogTerm >= lastLogTerm && (*rva).LastLogIndex >= lastLogIdx {
 		_state.stopElectionTimeout()
-		log.Debug("Become Follower")
+		log.Info("Become Follower")
 		_state.currentState = Follower
 		_state.currentTerm = (*rva).Term
 		_state.votedFor = (*rva).CandidateID
@@ -243,7 +243,7 @@ func (_state *stateImpl) handleRequestToVote(rva *RequestVoteArgs) *RequestVoteR
 	} else if (*rva).Term > _state.currentTerm {
 		// Our term is out of date, become follower
 		_state.stopElectionTimeout()
-		log.Debug("Become Follower")
+		log.Info("Become Follower")
 		_state.currentState = Follower
 		_state.currentTerm = (*rva).Term
 		_state.votedFor = (*rva).CandidateID
@@ -265,7 +265,7 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new
 		_state.currentElectionVotesNew = 0
 		_state.currentElectionVotesOld = 0
 		_state.currentTerm = (*resp).Term
-		log.Debug("Become Follower")
+		log.Info("Become Follower")
 		_state.currentState = Follower
 		// Only accept votes for the current term
 	} else if (*resp).Term == (_state.currentTerm) && (*resp).VoteGranted == true {
@@ -281,7 +281,7 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new
 
 func (_state *stateImpl) winElection() {
 	_state.lock.Lock()
-	log.Debug("Become Leader")
+	log.Info("Become Leader")
 	//var lastLogIdx, _ = _state.getLastLogIdxTerm()
 	_state.currentElectionVotesOld = 0
 	_state.currentElectionVotesNew = 0
@@ -414,7 +414,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 		if (*aea).Term >= _state.currentTerm {
 			// If AppendEntries RPC received from new leader: convert to follower
 			_state.stopElectionTimeout()
-			log.Debug("Become Follower")
+			log.Info("Become Follower")
 			_state.currentState = Follower
 			_state.currentTerm = (*aea).Term
 			_state.currentLeader = (*aea).LeaderID
@@ -516,7 +516,7 @@ func (_state *stateImpl) updateLastApplied() int {
 		if logIdx >= 0 {
 			_state.lastApplied++
 		}
-		log.Info(fmt.Sprintf("State: update last applied (log: %d, arr: %d)\n", _state.lastApplied, logIdx))
+		log.Debug(fmt.Sprintf("State: update last applied (log: %d, arr: %d)\n", _state.lastApplied, logIdx))
 		return logIdx
 	}
 	return -1
@@ -679,6 +679,7 @@ func (_state *stateImpl) takeSnapshot() bool {
 func (_state *stateImpl) prepareInstallSnapshotRPC() *InstallSnapshotArgs {
 	var lastSnapshot = *_state.lastSnapshot
 	var newInstallSnapshotArgs = InstallSnapshotArgs{
+		_state.id,
 		_state.currentTerm,
 		lastSnapshot.lastIncludedIndex,
 		lastSnapshot.lastIncludedTerm,
@@ -692,7 +693,7 @@ func (_state *stateImpl) prepareInstallSnapshotRPC() *InstallSnapshotArgs {
 func (_state *stateImpl) handleInstallSnapshotResponse(isr *InstallSnapshotResponse) int {
 	if !(*isr).Success {
 		if (*isr).Term >= _state.currentTerm {
-			log.Debug("Become Follower")
+			log.Info("Become Follower")
 			_state.currentState = Follower
 			_state.currentTerm = (*isr).Term
 			_state.currentLeader = (*isr).Id
@@ -766,7 +767,7 @@ func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) 
 		}
 	*/
 
-	log.Info("State: install snapshot ", (*isa).LastIncludedIndex)
+	log.Debug("State: install snapshot ", (*isa).LastIncludedIndex)
 	return &InstallSnapshotResponse{_state.id, _state.currentTerm, true, (*isa).LastIncludedIndex, (*isa).LastIncludedTerm}
 }
 
