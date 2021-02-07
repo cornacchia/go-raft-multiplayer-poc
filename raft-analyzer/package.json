@@ -1,0 +1,46 @@
+{
+  "name": "raft-analyzer",
+  "private": true,
+  "version": "0.0.0",
+  "description": "a Sails application",
+  "keywords": [],
+  "dependencies": {
+    "@sailshq/connect-redis": "^3.2.1",
+    "@sailshq/lodash": "^3.10.3",
+    "@sailshq/socket.io-redis": "^5.2.0",
+    "bootstrap": "^4.6.0",
+    "grunt": "1.0.4",
+    "jquery": "^3.5.1",
+    "lodash": "^4.17.20",
+    "popper.js": "^1.16.1",
+    "sails": "^1.4.0",
+    "sails-hook-grunt": "^4.0.0",
+    "sails-hook-orm": "^3.0.1",
+    "sails-hook-sockets": "^2.0.0",
+    "sails-mongo": "^1.2.0",
+    "vis-network": "^9.0.2"
+  },
+  "devDependencies": {
+    "css-loader": "^5.0.1",
+    "eslint": "5.16.0",
+    "grunt-webpack": "^4.0.2",
+    "style-loader": "^2.0.0",
+    "webpack": "^5.21.1"
+  },
+  "scripts": {
+    "start": "node app.js",
+    "test": "npm run lint && npm run custom-tests && echo 'Done.'",
+    "lint": "./node_modules/eslint/bin/eslint.js . --max-warnings=0 --report-unused-disable-directives && echo '✔  Your .js files look good.'",
+    "custom-tests": "echo \"(No other custom tests yet.)\" && echo"
+  },
+  "main": "app.js",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/gabriele/raft-analyzer.git"
+  },
+  "author": "gabriele",
+  "license": "",
+  "engines": {
+    "node": "^10.11"
+  }
+}
