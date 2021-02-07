@@ -1,5 +1,4 @@
 notes.md
-**/*.beam
 go_raft/go_raft
 go_skeletons/go_skeletons
 go_wanderer/go_wanderer

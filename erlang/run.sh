@@ -1,1 +1,0 @@
-erl -s main start
