@@ -57,20 +57,21 @@ async function addLogToState(idx) {
   if (log.lu) {
     const newNode = { id: log.n, label: log.n, color: colorNew, state: 'New', lastStateChange: log.i }
     currentState.nodes.push(newNode)
-  }
-  if (log.bf) {
+  } else if (log.bf) {
     _.remove(currentState.nodes, node => { return node.id === log.n })
     const newNode = { id: log.n, label: log.n, color: colorFollower, state: 'Follower', lastStateChange: log.i }
     currentState.nodes.push(newNode)
-  }
-  if (log.bc) {
+  } else if (log.bc) {
     _.remove(currentState.nodes, node => { return node.id === log.n })
     const newNode = { id: log.n, label: log.n, color: colorCandidate, state: 'Candidate', lastStateChange: log.i }
     currentState.nodes.push(newNode)
-  }
-  if (log.bl) {
+  } else if (log.bl) {
     _.remove(currentState.nodes, node => { return node.id === log.n })
     const newNode = { id: log.n, label: log.n, color: colorLeader, state: 'Leader', lastStateChange: log.i }
+    currentState.nodes.push(newNode)
+  } else if (log.sd) {
+    _.remove(currentState.nodes, node => { return node.id === log.n })
+    const newNode = { id: log.n, label: log.n, color: colorShutdown, state: 'Shutdown', lastStateChange: log.i }
     currentState.nodes.push(newNode)
   }
 }
@@ -121,15 +122,14 @@ function calcOpacitySize(i) {
   if (i === '2') return {opacity: 0.4, size: 8}
   if (i === '3') return {opacity: 0.3, size: 8}
   if (i === '4') return {opacity: 0.2, size: 8}
-  if (i === '5') return {opacity: 0.1, size: 8}
 }
 
 async function loadLastLogs(idx) {
   const logs = await sails.getDatastore().manager.collection(currentCollection)
-  .find({ i: { $gte: idx - 5, $lte: idx } }).sort({i: -1}).toArray()
+  .find({ i: { $gte: idx - lastLogslimit, $lte: idx } }).sort({i: -1}).toArray()
   currentState.logs = logs
   const newEdges = []
-  for (let i in logs) {
+  for (let i in logs.slice(0, 5)) {
     const log = logs[i]
     const opacitySize = calcOpacitySize(i)
     const color = { color: black, opacity: opacitySize.opacity }
@@ -144,11 +144,52 @@ async function loadLastLogs(idx) {
       newEdge.label = 'Connect'
 
       newEdges.push(newEdge)
-    }
-    if (log.saer) {
+    } else if (log.saer) {
       // Send AppendEntriesRPC
       const newEdge = { from: log.n, to: log.saer.i, arrows: 'to', idx: i, color, font }
       newEdge.label = 'Send AppendEntriesRPC'
+
+      newEdges.push(newEdge)
+    } else if (log.raer) {
+      // Respond to AppendEntriesRPC
+      const newEdge = { from: log.n, to: log.raer.i, arrows: 'to', idx: i, color, font }
+      if (log.raer.s === 'true') {
+        newEdge.label = 'Respond AppendEntriesRPC: True'
+      } else {
+        newEdge.label = 'Respond AppendEntriesRPC: False'
+      }
+
+      newEdges.push(newEdge)
+    } else if (log.srvr) {
+      // Send RequestVoteRPC
+      const newEdge = { from: log.n, to: log.srvr.i, arrows: 'to', idx: i, color, font }
+      newEdge.label = 'Send RequestVoteRPC'
+
+      newEdges.push(newEdge)
+    } else if (log.rrvr) {
+      // Respond to RequestVoteRPC
+      const newEdge = { from: log.n, to: log.rrvr.i, arrows: 'to', idx: i, color, font }
+      if (log.rrvr.s === 'true') {
+        newEdge.label = 'Respond RequestVoteRPC: True'
+      } else {
+        newEdge.label = 'Respond RequestVoteRPC: False'
+      }
+
+      newEdges.push(newEdge)
+    } else if (log.isr) {
+      // Send InstallSnapshotRPC
+      const newEdge = { from: log.n, to: log.isr.i, arrows: 'to', idx: i, color, font }
+      newEdge.label = 'Send InstallSnapshotRPC'
+
+      newEdges.push(newEdge)
+    } else if (log.risr) {
+      // Respond to InstallSnapshotRPC
+      const newEdge = { from: log.n, to: log.risr.i, arrows: 'to', idx: i, color, font }
+      if (log.risr.s === 'true') {
+        newEdge.label = 'Respond InstallSnapshotRPC: True'
+      } else {
+        newEdge.label = 'Respond InstallSnapshotRPC: False'
+      }
 
       newEdges.push(newEdge)
     }

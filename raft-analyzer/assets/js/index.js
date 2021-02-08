@@ -24,11 +24,62 @@ function resetClientState(currentCollection) {
   clientState.currentIdx = -1
 }
 
+function getDateString(dateString) {
+  const date = new Date(dateString)
+  return date.getHours() + ':' + date.getMinutes() + ':' + date.getSeconds() + '.' + date.getMilliseconds()
+}
+
+function getLogHtml(log) {
+  let htmlString = getDateString(log.t) + ' '
+  htmlString += '<strong>' + log.n + '</strong> '
+  if (log.lu) htmlString += 'Listener up'
+  if (log.ctn) {
+    htmlString += '<i class="fas fa-arrow-right"></i> <strong>' + log.ctn.i + '</strong> '
+    htmlString += 'Connected'
+  }
+  if (log.saer) {
+    htmlString += '<i class="fas fa-arrow-right"></i> <strong>' + log.saer.i + '</strong> '
+    htmlString += 'Send AppendEntriesRPC'
+  }
+  if (log.raer) {
+    htmlString += '<i class="fas fa-arrow-right"></i> <strong>' + log.raer.i + '</strong> '
+    htmlString += 'Respond to AppendEntriesRPC '
+    if (log.raer.s === 'true') htmlString += '<i class="fas fa-check"></i>'
+    else htmlString += '<i class="fas fa-times"></i>'
+  }
+  if (log.srvr) {
+    htmlString += '<i class="fas fa-arrow-right"></i> <strong>' + log.srvr.i + '</strong> '
+    htmlString += 'Send RequestVoteRPC'
+  }
+  if (log.rrvr) {
+    htmlString += '<i class="fas fa-arrow-right"></i> <strong>' + log.rrvr.i + '</strong> '
+    htmlString += 'Respond to RequestVoteRPC'
+    if (log.rrvr.s === 'true') htmlString += '<i class="fas fa-check"></i>'
+    else htmlString += '<i class="fas fa-times"></i>'
+  }
+  if (log.isr) {
+    htmlString += '<i class="fas fa-arrow-right"></i> <strong>' + log.isr.i + '</strong> '
+    htmlString += 'Send InstallSnapshotRPC'
+  }
+  if (log.risr) {
+    htmlString += '<i class="fas fa-arrow-right"></i> <strong>' + log.risr.i + '</strong> '
+    htmlString += 'Respond to InstallSnapshotRPC'
+    if (log.risr.s === 'true') htmlString += '<i class="fas fa-check"></i>'
+    else htmlString += '<i class="fas fa-times"></i>'
+  }
+  if (log.bf) htmlString += 'Become Follower'
+  if (log.bc) htmlString += 'Become Candidate'
+  if (log.bl) htmlString += 'Become Leader (term: ' + log.bl + ')'
+  if (log.al) htmlString += 'Apply log: ' + log.al
+  if (log.sd) htmlString += 'Shutting down'
+  return htmlString
+}
+
 function renderLogs(state) {
   let htmlString = ''
   for (const log of state.logs) {
     htmlString += '<li class="list-group-item">'
-    htmlString += log.i
+    htmlString += getLogHtml(log)
     htmlString += '</li>\n'
   }
   $('#logList').html(htmlString)
@@ -65,9 +116,13 @@ function renderState(state) {
   renderNetwork(state)
   renderNodes(state)
   renderLogs(state)
+  $('#logLoadingMsg').attr('hidden', true)
+  $('.logCmd').prop('disabled', false)
 }
 
 function fetchState() {
+  $('#logLoadingMsg').removeAttr('hidden')
+  $('.logCmd').prop('disabled', true)
   $.post('/simulateLog', { idx: clientState.currentIdx })
   .done(renderState)
 }
