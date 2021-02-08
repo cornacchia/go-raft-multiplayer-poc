@@ -340,14 +340,17 @@ func handleCandidate(opt *options) {
 		log.Trace("Received RequestVoteRPC response from: ", (*reqVoteResponse).Id)
 		var connection, _ = (*(*opt).connections).Load((*reqVoteResponse).Id)
 		var conn = connection.(RaftConnection)
-		var currentVotesOld, currentVotesNew = (*opt)._state.updateElection(reqVoteResponse, conn.Old, conn.New)
-		// Check if a majority of votes was received
-		if checkVotesMajority(opt, currentVotesNew, currentVotesOld) {
-			(*opt)._state.stopElectionTimeout()
-			(*opt)._state.winElection()
-			// Immediately send hearthbeat to every follower to establish leadership
+		if becomeLeader := (*opt)._state.updateElection(reqVoteResponse, conn.Old, conn.New); becomeLeader {
 			sendAppendEntriesRPCs(opt)
 		}
+		// var currentVotesOld, currentVotesNew = (*opt)._state.updateElection(reqVoteResponse, conn.Old, conn.New)
+		// Check if a majority of votes was received
+		// if checkVotesMajority(opt, currentVotesNew, currentVotesOld) {
+		// 	(*opt)._state.stopElectionTimeout()
+		// 	(*opt)._state.winElection()
+		// 	// Immediately send hearthbeat to every follower to establish leadership
+		// 	sendAppendEntriesRPCs(opt)
+		// }
 	case <-(*electionTimeoutTimer).C:
 		(*opt)._state.stopElectionTimeout()
 		// Too much time has passed with no leader or response, start anew

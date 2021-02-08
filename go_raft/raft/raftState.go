@@ -155,7 +155,7 @@ type state interface {
 	stopElectionTimeout()
 	handleRequestToVote(*RequestVoteArgs) *RequestVoteResponse
 	getElectionTimer() *time.Timer
-	updateElection(*RequestVoteResponse, bool, bool) (int, int)
+	updateElection(*RequestVoteResponse, bool, bool) bool
 	winElection()
 	getAppendEntriesArgs(ServerID) *AppendEntriesArgs
 	handleAppendEntriesResponse(*AppendEntriesResponse) (int, bool)
@@ -258,7 +258,8 @@ func (_state *stateImpl) getElectionTimer() *time.Timer {
 	return _state.electionTimer
 }
 
-func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new bool) (int, int) {
+func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new bool) bool {
+	_state.lock.Lock()
 	// If the node's current state is stale immediately revert to Follower state
 	if (*resp).Term > (_state.currentTerm) {
 		_state.stopElectionTimeout()
@@ -267,6 +268,8 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new
 		_state.currentTerm = (*resp).Term
 		log.Info("Become Follower")
 		_state.currentState = Follower
+		_state.lock.Unlock()
+		return false
 		// Only accept votes for the current term
 	} else if (*resp).Term == (_state.currentTerm) && (*resp).VoteGranted == true {
 		if old {
@@ -275,27 +278,32 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new
 		if new {
 			_state.currentElectionVotesNew++
 		}
+
+		if _state.checkMajority(_state.currentElectionVotesNew, _state.currentElectionVotesOld) {
+			_state.winElection()
+			_state.lock.Unlock()
+			return true
+		}
 	}
-	return _state.currentElectionVotesOld, _state.currentElectionVotesNew
+	_state.lock.Unlock()
+	return false
 }
 
 func (_state *stateImpl) winElection() {
-	_state.lock.Lock()
 	log.Info("Become Leader: ", _state.currentTerm)
-	//var lastLogIdx, _ = _state.getLastLogIdxTerm()
+	var lastLogIdx, _ = _state.getLastLogIdxTerm()
 	_state.currentElectionVotesOld = 0
 	_state.currentElectionVotesNew = 0
 	_state.currentState = Leader
 	_state.currentLeader = _state.id
 	for id := range _state.nextIndex {
-		//_state.nextIndex[id] = lastLogIdx + 1
-		_state.nextIndex[id] = 0
+		_state.nextIndex[id] = lastLogIdx + 1
+		//_state.nextIndex[id] = 0
 	}
 	//_state.matchIndex[_state.id] = lastLogIdx
 	//_state.lastSentLogIndex[_state.id] = lastLogIdx
 	_state.matchIndex[_state.id] = -1
 	_state.lastSentLogIndex[_state.id] = -1
-	_state.lock.Unlock()
 }
 
 func (_state *stateImpl) prepareAppendEntriesArgs(lastLogIdx int, lastLogTerm int, logsToSend []RaftLog) *AppendEntriesArgs {
@@ -443,8 +451,9 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 	}
 
 	// At this point we can say that if the append entries request is empty
-	// then it is an heartbeat an so we can keep _state.currentLeader updated
+	// then it is an heartbeat an so we can keep _state.currentLeader and _state.currentTerm updated
 	_state.currentLeader = (*aea).LeaderID
+	_state.currentTerm = (*aea).Term
 
 	// 3. If an existing entry conflicts with a new one (same index but different terms),
 	// delete the existing entry and all that follow it
@@ -527,7 +536,7 @@ func (_state *stateImpl) getLog(i int) RaftLog {
 	return _state.logs[i]
 }
 
-func checkMajority(_state *stateImpl, newCount int, oldCount int) bool {
+func (_state *stateImpl) checkMajority(newCount int, oldCount int) bool {
 	var oldMajority = true
 	var newMajority = newCount > ((*_state).newServerCount)/2
 	if (*_state).oldServerCount > 0 {
@@ -563,7 +572,7 @@ func (_state *stateImpl) checkCommits() {
 				}
 			}
 		}
-		if checkMajority(_state, replicatedFollowersNew, replicatedFollowersOld) {
+		if _state.checkMajority(replicatedFollowersNew, replicatedFollowersOld) {
 			if _state.logs[i].Term == _state.currentTerm {
 				_state.commitIndex = _state.logs[i].Idx
 			}
