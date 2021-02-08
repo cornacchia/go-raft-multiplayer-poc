@@ -4,6 +4,8 @@ const _ = require('lodash')
 const $ = require('jquery')
 const vis = require('vis-network/standalone')
 
+let playInterval
+
 let serverState = {
   collections: [],
   dbState: {
@@ -117,12 +119,12 @@ function renderState(state) {
   renderNodes(state)
   renderLogs(state)
   $('#logLoadingMsg').attr('hidden', true)
-  $('.logCmd').prop('disabled', false)
+  if (_.isNil(playInterval)) $('.logCmd.manual').prop('disabled', false)
 }
 
 function fetchState() {
   $('#logLoadingMsg').removeAttr('hidden')
-  $('.logCmd').prop('disabled', true)
+  if (_.isNil(playInterval)) $('.logCmd.manual').prop('disabled', true)
   $.post('/simulateLog', { idx: clientState.currentIdx })
   .done(renderState)
 }
@@ -163,6 +165,7 @@ function loadAndAnalyzeLogs() {
 }
 
 function updateCollection(res) {
+  $('.logCmd').prop('disabled', false)
   clientState.nOfDocs = res.count
   clientState.currentIdx = 0
   $('#nOfDocs').text(res.count)
@@ -228,10 +231,22 @@ function getState() {
   .done(updateState)
 }
 
+function autoPlay() {
+  playInterval = window.setInterval(nextLog, 500)
+  $('.logCmd.manual').prop('disabled', true)
+}
+
+function stopAutoPlay() {
+  window.clearInterval(playInterval)
+  $('.logCmd.manual').prop('disabled', false)
+}
+
 function start() {
   $("#loadAndAnalyzeLogs").on('click', loadAndAnalyzeLogs)
   $("#prevLog").on('click', prevLog)
   $("#nextLog").on('click', nextLog)
+  $('#play').on('click', autoPlay)
+  $('#stop').on('click', stopAutoPlay)
   $("#collectionSelect").on('change', setNewCollection)
   $("#currentIdx").on('change', setNewIdx)
   resetClientState('')

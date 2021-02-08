@@ -35,17 +35,23 @@
   <div class="col-7">
     <!-- COMMANDS -->
     <div class="row">
-      <div class="col-6">
+      <div class="col-12">
         <div class="input-group mb-3">
           <div class="input-group-prepend">
-            <button id="prevLog" class="btn btn-outline-secondary logCmd" type="button"><i class="fas fa-arrow-left"></i></button>
-            <button id="nextLog" class="btn btn-outline-secondary logCmd" type="button"><i class="fas fa-arrow-right"></i></button>
+            <button id="prevLog" class="btn btn-outline-secondary logCmd manual" type="button" disabled><i class="fas fa-arrow-left"></i></button>
+            <button id="nextLog" class="btn btn-outline-secondary logCmd manual" type="button" disabled><i class="fas fa-arrow-right"></i></button>
           </div>
-          <input id="currentIdx" type="number" class="form-control logCmd" style="width:50px;">
+          <input id="currentIdx" type="number" class="form-control logCmd manual" style="width:30px;" disabled>
           <div class="input-group-append">
             <span id="nOfDocs" class="input-group-text"></span>
-          </div>&nbsp;
-          <span id="logLoadingMsg" hidden><i class="fas fa-spinner fa-spin fa-2x"></i></span>
+          </div>
+          <div class="input-group-append">
+            <button id="play" class="btn btn-outline-secondary logCmd" type="button" disabled><i class="fas fa-play"></i></button>
+            <button id="stop" class="btn btn-outline-secondary logCmd" type="button" disabled><i class="fas fa-stop"></i></button>
+          </div>
+          <div class="input-group-append">
+            <span class="input-group-text" style="width: 50px;"><i id="logLoadingMsg" class="fas fa-spinner fa-spin" hidden></i></span>
+          </div>
         </div>
       </div>
     </div>
