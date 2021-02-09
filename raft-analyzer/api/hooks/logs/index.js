@@ -116,12 +116,12 @@ async function removeLogFromState(idx) {
   }
 }
 
-function calcOpacitySize(i) {
-  if (i === '0') return {opacity: 1, size: 20}
-  if (i === '1') return {opacity: 0.5, size: 10}
-  if (i === '2') return {opacity: 0.4, size: 8}
-  if (i === '3') return {opacity: 0.3, size: 8}
-  if (i === '4') return {opacity: 0.2, size: 8}
+function calcColor(i) {
+  if (i === '0') return black + 'ff'
+  if (i === '1') return black + '50'
+  if (i === '2') return black + '40'
+  if (i === '3') return black + '30'
+  if (i === '4') return black + '20'
 }
 
 async function loadLastLogs(idx) {
@@ -131,16 +131,16 @@ async function loadLastLogs(idx) {
   const newEdges = []
   for (let i in logs.slice(0, 5)) {
     const log = logs[i]
-    const opacitySize = calcOpacitySize(i)
-    const color = { color: black, opacity: opacitySize.opacity }
-    const font = { color: black, size: opacitySize.size }
+    const colorOpacity = calcColor(i)
+    const color = { color: colorOpacity }
+    const font = { color: color.color }
     if (i === '0') {
       font.strokeWidth = 2
       font.strokeColor = '#ff0000'
     }
     if (log.ctn && log.n !== log.ctn.i) {
       // Connected
-      const newEdge = { from: log.n, to: log.ctn.i, arrows: 'to', idx: i, color, font}
+      const newEdge = { from: log.n, to: log.ctn.i, arrows: 'to', idx: i, color, font }
       newEdge.label = 'Connect'
 
       newEdges.push(newEdge)
