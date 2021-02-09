@@ -11,6 +11,12 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+type RequestConnection struct {
+	Id          ServerID
+	State       [2]bool
+	Destination *sync.Map
+}
+
 type RaftConnectionResponse struct {
 	Id         ServerID
 	Connection *rpc.Client
@@ -61,6 +67,7 @@ type options struct {
 	unvotingConnections    *sync.Map
 	connectedChan          chan bool
 	connected              bool
+	requestConnectionChan  chan RequestConnection
 }
 
 // Start function for server logic
@@ -87,37 +94,56 @@ func Start(mode string, port string, otherServers []ServerID, actionChan chan Ga
 		0,
 		nil,
 		connectedChan,
-		len(otherServers) == 0}
+		len(otherServers) == 0,
+		make(chan RequestConnection)}
 	var raftListener = initRaftListener(newOptions)
 	startListeningServer(raftListener, port)
 	nodeConnections, num := ConnectToRaftServers(newOptions, newOptions._state.getID(), otherServers)
 	newOptions.connections = nodeConnections
 	newOptions.numberOfNewConnections = num
 	newOptions.unvotingConnections = &sync.Map{}
+	go ConnectionManager(newOptions, newOptions.requestConnectionChan)
 	go run(newOptions)
 	return nodeConnections
 }
 
-func ConnectToRaftServer(opt *options, serverPort ServerID, result chan *RaftConnectionResponse) {
-	var startTime = time.Now().Unix()
-	var connected = false
-	for time.Now().Unix() < startTime+600 && !connected {
-		client, err := rpc.DialHTTP("tcp", "127.0.0.1:"+string(serverPort))
-		if err != nil {
-			log.Warning("Error connecting to node: " + string(serverPort))
-			time.Sleep(1 * time.Second)
-		} else {
-			connected = true
-			if opt != nil {
-				(*opt)._state.addNewServer(serverPort)
-				log.Info("Raft - Connected to node: " + string(serverPort))
+func ConnectionManager(opt *options, requestConnectionChan chan RequestConnection) {
+	var ungoingConnections = make(map[ServerID]bool)
+	responseChan := make(chan ServerID)
+	for {
+		select {
+		case newConnReq := <-requestConnectionChan:
+			if connecting, found := ungoingConnections[newConnReq.Id]; found {
+				// Check if we are already connecting to this server
+				if !connecting {
+					ungoingConnections[newConnReq.Id] = true
+					go EnsureConnectionToServer(opt, newConnReq.Id, newConnReq.State, newConnReq.Destination, responseChan)
+				}
 			} else {
-				log.Debug("Main - Connected to node: " + string(serverPort))
+				ungoingConnections[newConnReq.Id] = true
+				go EnsureConnectionToServer(opt, newConnReq.Id, newConnReq.State, newConnReq.Destination, responseChan)
 			}
-
-			var newConnection = RaftConnectionResponse{serverPort, client}
-			result <- &newConnection
+		case connectedID := <-responseChan:
+			ungoingConnections[connectedID] = false
 		}
+	}
+}
+
+func ConnectToRaftServer(opt *options, serverPort ServerID, result chan *RaftConnectionResponse) {
+	client, err := rpc.DialHTTP("tcp", "127.0.0.1:"+string(serverPort))
+	if err != nil {
+		log.Warning("Error connecting to node: " + string(serverPort))
+		result <- &RaftConnectionResponse{serverPort, nil}
+	} else {
+		if opt != nil {
+			(*opt)._state.addNewServer(serverPort)
+			log.Info("Raft - Connected to node: " + string(serverPort))
+		} else {
+			log.Debug("Main - Connected to node: " + string(serverPort))
+		}
+
+		var newConnection = RaftConnectionResponse{serverPort, client}
+		result <- &newConnection
 	}
 }
 
@@ -125,34 +151,48 @@ func ConnectToRaftServers(opt *options, myID ServerID, otherServers []ServerID) 
 	var num = 0
 	const connectionTimeout time.Duration = 300
 	var establishedConnections sync.Map
-	responseChan := make(chan *RaftConnectionResponse)
+	responseChan := make(chan ServerID)
+
+	go EnsureConnectionToServer(opt, myID, [2]bool{false, true}, &establishedConnections, responseChan)
 	for i := 0; i < len(otherServers); i++ {
-		go func(i int) {
-			ConnectToRaftServer(opt, otherServers[i], responseChan)
-		}(i)
+		go EnsureConnectionToServer(opt, otherServers[i], [2]bool{false, true}, &establishedConnections, responseChan)
 	}
-	go func() {
-		ConnectToRaftServer(opt, myID, responseChan)
-	}()
+
 	for i := 0; i < len(otherServers)+1; i++ {
 		select {
-		case resp := <-responseChan:
+		case serverID := <-responseChan:
 			// Mark new connections as NEW
-			var newConnection = RaftConnection{(*resp).Connection, false, true}
-			establishedConnections.Store((*resp).Id, newConnection)
 			if opt != nil {
-				(*opt)._state.updateServerConfiguration((*resp).Id, [2]bool{false, true})
+				(*opt)._state.updateServerConfiguration(serverID, [2]bool{false, true})
 			}
 			num++
-			// Only keep track of number of connections to other servers
-			//if (*resp).id != myID {
-			//	num++
-			//}
 		case <-time.After(time.Second * connectionTimeout):
 			log.Fatal("Timeout connecting to other nodes")
 		}
 	}
 	return &establishedConnections, num
+}
+
+func EnsureConnectionToServer(opt *options, serverPort ServerID, connState [2]bool, relevantConnections *sync.Map, responseChan chan ServerID) {
+	if opt != nil {
+		log.Debug("Raft - Ensure connection to server: ", serverPort)
+	} else {
+		log.Debug("Main - Ensure connection to server: ", serverPort)
+	}
+	localRespChan := make(chan *RaftConnectionResponse)
+	var connected = false
+	for !connected {
+		go ConnectToRaftServer(opt, serverPort, localRespChan)
+		resp := <-localRespChan
+		if (*resp).Connection == nil {
+			time.Sleep(time.Second * 1)
+		} else {
+			var newConnection = RaftConnection{(*resp).Connection, connState[0], connState[1]}
+			relevantConnections.Store((*resp).Id, newConnection)
+			connected = true
+		}
+	}
+	responseChan <- serverPort
 }
 
 func startListeningServer(raftListener *RaftListener, port string) {
@@ -179,12 +219,18 @@ func sendRequestVoteRPCs(opt *options, requestVoteArgs *RequestVoteArgs) {
 		go func(opt *options, requestVoteCall *rpc.Call, id ServerID) {
 			select {
 			case <-requestVoteCall.Done:
-				(*opt).myRequestVoteResponseChan <- &requestVoteResponse
+				if requestVoteResponse.Id == "" {
+					log.Debug("RequestVoteRPC: Removing unresponsive connection")
+					(*opt).connections.LoadAndDelete(id)
+					(*opt).requestConnectionChan <- RequestConnection{id, [2]bool{raftConn.Old, raftConn.New}, (*opt).connections}
+				} else {
+					(*opt).myRequestVoteResponseChan <- &requestVoteResponse
+				}
 			case <-time.After(time.Millisecond * electionTimeout):
 				log.Warning("RequestVoteRPC: Did not receive response from: " + string(id))
-				// TODO: handle error
 			}
 		}(opt, requestVoteCall, id.(ServerID))
+
 		return true
 	})
 }
@@ -217,13 +263,8 @@ func checkConnectionsToAdd(opt *options, connMap map[ServerID][2]bool) {
 			conn.New = state[1]
 			(*(*opt).connections).Store(id, conn)
 		} else {
-			// Otherwise we need to connect to the node
-			responseChan := make(chan *RaftConnectionResponse)
-			go ConnectToRaftServer(opt, id, responseChan)
-			resp := <-responseChan
-			var newConnection = RaftConnection{(*resp).Connection, state[0], state[1]}
+			(*opt).requestConnectionChan <- RequestConnection{id, state, (*opt).connections}
 			(*opt)._state.updateServerConfiguration(id, [2]bool{state[0], state[1]})
-			(*(*opt).connections).Store(id, newConnection)
 		}
 	}
 }
@@ -303,16 +344,6 @@ func handleFollower(opt *options) {
 	}
 }
 
-func checkVotesMajority(opt *options, newVotes int, oldVotes int) bool {
-	log.Trace(fmt.Sprintf("Check majority: new %d/%d, old %d/%d", newVotes, (*opt).numberOfNewConnections, oldVotes, (*opt).numberOfOldConnections))
-	var oldMajority = true
-	var newMajority = newVotes > ((*opt).numberOfNewConnections)/2
-	if (*opt).numberOfOldConnections > 0 {
-		oldMajority = oldVotes > ((*opt).numberOfOldConnections)/2
-	}
-	return newMajority && oldMajority
-}
-
 func handleCandidate(opt *options) {
 	log.Trace("## Candidate: handle current turn")
 	var electionTimeoutTimer = (*opt)._state.checkElectionTimeout()
@@ -338,19 +369,13 @@ func handleCandidate(opt *options) {
 	// Receive a response to an issued RequestVoteRPC
 	case reqVoteResponse := <-(*opt).myRequestVoteResponseChan:
 		log.Trace("Received RequestVoteRPC response from: ", (*reqVoteResponse).Id)
-		var connection, _ = (*(*opt).connections).Load((*reqVoteResponse).Id)
-		var conn = connection.(RaftConnection)
-		if becomeLeader := (*opt)._state.updateElection(reqVoteResponse, conn.Old, conn.New); becomeLeader {
-			sendAppendEntriesRPCs(opt)
+		var connection, found = (*(*opt).connections).Load((*reqVoteResponse).Id)
+		if found {
+			var conn = connection.(RaftConnection)
+			if becomeLeader := (*opt)._state.updateElection(reqVoteResponse, conn.Old, conn.New); becomeLeader {
+				sendAppendEntriesRPCs(opt)
+			}
 		}
-		// var currentVotesOld, currentVotesNew = (*opt)._state.updateElection(reqVoteResponse, conn.Old, conn.New)
-		// Check if a majority of votes was received
-		// if checkVotesMajority(opt, currentVotesNew, currentVotesOld) {
-		// 	(*opt)._state.stopElectionTimeout()
-		// 	(*opt)._state.winElection()
-		// 	// Immediately send hearthbeat to every follower to establish leadership
-		// 	sendAppendEntriesRPCs(opt)
-		// }
 	case <-(*electionTimeoutTimer).C:
 		(*opt)._state.stopElectionTimeout()
 		// Too much time has passed with no leader or response, start anew
@@ -364,7 +389,7 @@ func handleCandidate(opt *options) {
 	}
 }
 
-func appendEntriesRPCAction(opt *options, appendEntriesArgs *AppendEntriesArgs, appendEntriesTimeout time.Duration, id interface{}, connection interface{}) bool {
+func appendEntriesRPCAction(opt *options, appendEntriesArgs *AppendEntriesArgs, appendEntriesTimeout time.Duration, id interface{}, connection interface{}, unvoting bool) bool {
 	if len((*appendEntriesArgs).Entries) > 0 {
 		log.Info("Sending AppendEntriesRPC: ", id, " ", (*appendEntriesArgs).Entries[0].Idx, " ", (*appendEntriesArgs).Entries[len((*appendEntriesArgs).Entries)-1].Idx)
 	}
@@ -374,12 +399,23 @@ func appendEntriesRPCAction(opt *options, appendEntriesArgs *AppendEntriesArgs, 
 	go func(opt *options, appendEntriesCall *rpc.Call, id ServerID) {
 		select {
 		case <-appendEntriesCall.Done:
-			(*opt).myAppendEntriesResponseChan <- &appendEntriesResponse
+			if appendEntriesResponse.Id == "" {
+				log.Debug("AppendEntriesRPC: Removing unresponsive connection")
+				if unvoting {
+					(*opt).unvotingConnections.LoadAndDelete(id)
+					(*opt).requestConnectionChan <- RequestConnection{id, [2]bool{raftConn.Old, raftConn.New}, (*opt).unvotingConnections}
+				} else {
+					(*opt).connections.LoadAndDelete(id)
+					(*opt).requestConnectionChan <- RequestConnection{id, [2]bool{raftConn.Old, raftConn.New}, (*opt).connections}
+				}
+			} else {
+				(*opt).myAppendEntriesResponseChan <- &appendEntriesResponse
+			}
 		case <-time.After(time.Millisecond * appendEntriesTimeout):
 			log.Warning("AppendEntriesRPC: Did not receive response from: " + string(id))
-			// TODO: handle error
 		}
 	}(opt, appendEntriesCall, id.(ServerID))
+
 	return true
 }
 
@@ -395,7 +431,7 @@ func sendAppendEntriesRPCs(opt *options) {
 			sendInstallSnapshotRPC(opt, false, id.(ServerID))
 			return true
 		}
-		return appendEntriesRPCAction(opt, args, appendEntriesTimeout, id, connection)
+		return appendEntriesRPCAction(opt, args, appendEntriesTimeout, id, connection, false)
 	})
 	(*(*opt).unvotingConnections).Range(func(id interface{}, connection interface{}) bool {
 		if id.(ServerID) == (*opt)._state.getID() {
@@ -406,34 +442,45 @@ func sendAppendEntriesRPCs(opt *options) {
 			sendInstallSnapshotRPC(opt, true, id.(ServerID))
 			return true
 		}
-		return appendEntriesRPCAction(opt, args, appendEntriesTimeout, id, connection)
+		return appendEntriesRPCAction(opt, args, appendEntriesTimeout, id, connection, true)
 	})
 }
 
-// TODO gestire casi in cui la connessione è stata chiusa da fuori in modo sporco
 func sendInstallSnapshotRPC(opt *options, unvoting bool, id ServerID) {
 	const installSnapshotTimeout time.Duration = 200
 	var installSnapshotResponse InstallSnapshotResponse
 	var installSnapshotArgs = (*opt)._state.prepareInstallSnapshotRPC()
 	log.Info("Sending InstallSnapshotRPC: ", id, " ", (*installSnapshotArgs).LastIncludedIndex)
 	var connection interface{}
+	var found = false
 	if unvoting {
-		connection, _ = (*opt).unvotingConnections.Load(id)
+		connection, found = (*opt).unvotingConnections.Load(id)
 	} else {
-		connection, _ = (*opt).connections.Load(id)
+		connection, found = (*opt).connections.Load(id)
 	}
-	var raftConn = connection.(RaftConnection)
-
-	installSnapshotCall := raftConn.Connection.Go("RaftListener.InstallSnapshotRPC", installSnapshotArgs, &installSnapshotResponse, nil)
-	go func(opt *options, installSnapshotCall *rpc.Call, id ServerID) {
-		select {
-		case <-installSnapshotCall.Done:
-			(*opt).myInstallSnapshotResponseChan <- &installSnapshotResponse
-		case <-time.After(time.Millisecond * installSnapshotTimeout):
-			log.Warning("InstallSnapshotRPC: Did not receive response from: " + string(id))
-			// TODO: handle error
-		}
-	}(opt, installSnapshotCall, id)
+	if found {
+		var raftConn = connection.(RaftConnection)
+		installSnapshotCall := raftConn.Connection.Go("RaftListener.InstallSnapshotRPC", installSnapshotArgs, &installSnapshotResponse, nil)
+		go func(opt *options, installSnapshotCall *rpc.Call, id ServerID) {
+			select {
+			case <-installSnapshotCall.Done:
+				if installSnapshotResponse.Id == "" {
+					log.Debug("InstallSnapshotRPC: Removing unresponsive connection")
+					if unvoting {
+						(*opt).unvotingConnections.LoadAndDelete(id)
+						(*opt).requestConnectionChan <- RequestConnection{id, [2]bool{raftConn.Old, raftConn.New}, (*opt).unvotingConnections}
+					} else {
+						(*opt).connections.LoadAndDelete(id)
+						(*opt).requestConnectionChan <- RequestConnection{id, [2]bool{raftConn.Old, raftConn.New}, (*opt).connections}
+					}
+				} else {
+					(*opt).myInstallSnapshotResponseChan <- &installSnapshotResponse
+				}
+			case <-time.After(time.Millisecond * installSnapshotTimeout):
+				log.Warning("InstallSnapshotRPC: Did not receive response from: " + string(id))
+			}
+		}(opt, installSnapshotCall, id)
+	}
 }
 
 func handleResponseToMessage(opt *options, chanApplied chan bool, chanResponse chan *ActionResponse) {
@@ -514,13 +561,15 @@ func handleLeader(opt *options) {
 		if act.Msg.Type == "Connect" {
 			log.Debug("Received request to connect")
 			// Connect to new node and add it to the unvotingConnections map
-			responseChan := make(chan *RaftConnectionResponse)
-			go ConnectToRaftServer(opt, ServerID(act.Msg.Id), responseChan)
-			resp := <-responseChan
-			var newConnection = RaftConnection{(*resp).Connection, false, false}
-			(*(*opt).unvotingConnections).Store((*resp).Id, newConnection)
-			(*opt)._state.updateServerConfiguration((*resp).Id, [2]bool{false, false})
-			(*opt)._state.updateNewServerResponseChans((*resp).Id, act.Msg.ChanApplied)
+			go func() {
+				// Check if this is a reconnection after a node failure
+				if _, found := (*opt).connections.LoadAndDelete(ServerID(act.Msg.Id)); found {
+					(*opt)._state.removeServer(ServerID(act.Msg.Id))
+				}
+				(*opt).requestConnectionChan <- RequestConnection{ServerID(act.Msg.Id), [2]bool{false, false}, (*opt).unvotingConnections}
+				(*opt)._state.updateServerConfiguration(ServerID(act.Msg.Id), [2]bool{false, false})
+				(*opt)._state.updateNewServerResponseChans(ServerID(act.Msg.Id), act.Msg.ChanApplied)
+			}()
 			go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
 		} else if act.Msg.Type == "Disconnect" {
 			log.Debug("Received request to disconnect")

@@ -595,9 +595,11 @@ func (_state *stateImpl) getCommitIndex() int {
 
 func (_state *stateImpl) addNewServer(sid ServerID) {
 	_state.lock.Lock()
-	_state.lastSentLogIndex[sid] = 0
-	_state.nextIndex[sid] = 0
-	_state.matchIndex[sid] = 0
+	if _, found := _state.nextIndex[sid]; !found {
+		_state.lastSentLogIndex[sid] = 0
+		_state.nextIndex[sid] = 0
+		_state.matchIndex[sid] = 0
+	}
 	_state.lock.Unlock()
 }
 
