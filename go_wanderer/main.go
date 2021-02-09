@@ -20,14 +20,15 @@ import (
 const actionCallTimeout = 300
 
 type options struct {
-	actionChan       chan engine.GameLog
-	connections      *sync.Map
-	otherServers     []raft.ServerID
-	id               raft.ServerID
-	connectedChan    chan bool
-	disconnectedChan chan bool
-	outputFile       *os.File
-	mode             string
+	actionChan            chan engine.GameLog
+	connections           *sync.Map
+	otherServers          []raft.ServerID
+	id                    raft.ServerID
+	connectedChan         chan bool
+	disconnectedChan      chan bool
+	outputFile            *os.File
+	mode                  string
+	requestConnectionChan chan raft.RequestConnection
 }
 
 func checkError(err error) {
@@ -119,20 +120,19 @@ func manageActions(opt *options) {
 			var actionResponse raft.ActionResponse
 			var jsonAction, _ = json.Marshal(msg.Action)
 			var actionArgs = raft.ActionArgs{string(msg.Id), msg.ActionId, msg.Type, jsonAction}
-			var conn, _ = (*(*opt).connections).Load(currentConnection)
-			var raftConn = conn.(raft.RaftConnection)
-			actionCall := raftConn.Connection.Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
-			go handleActionResponse(actionCall, &actionResponse, newConnectionID, msg, timestamp, opt)
+			var conn, found = (*(*opt).connections).Load(currentConnection)
+			if !found {
+				currentConnection = (*opt).id
+			} else {
+				var raftConn = conn.(raft.RaftConnection)
+				actionCall := raftConn.Connection.Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
+				go handleActionResponse(actionCall, &actionResponse, newConnectionID, msg, timestamp, opt)
+			}
 		case newLeaderID := <-newConnectionID:
 			currentConnection = newLeaderID
 			var _, found = (*(*opt).connections).Load(currentConnection)
 			if !found {
-				log.Info("Need to connect to new leader: ", newLeaderID)
-				resultChan := make(chan *raft.RaftConnectionResponse)
-				go raft.ConnectToRaftServer(nil, currentConnection, resultChan)
-				var resp = <-resultChan
-				var newConnection = raft.RaftConnection{(*resp).Connection, false, true}
-				(*(*opt).connections).Store((*resp).Id, newConnection)
+				(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, [2]bool{false, true}, (*opt).connections}
 			}
 		}
 	}
@@ -162,7 +162,7 @@ func main() {
 	// Command line arguments
 	args := os.Args
 	if len(args) < 4 {
-		log.Fatal("Usage: go_skeletons <Game|Test> <Client|Node|Bot> <Port> ...<other raft ports>")
+		log.Fatal("Usage: go_wanderer <Game|Test> <Client|Node|Bot> <Port> ...<other raft ports>")
 	}
 
 	mode := args[1]
@@ -203,6 +203,7 @@ func main() {
 	var snapshotInstallChan = make(chan []byte)
 	var currentTurnEngineChan = make(chan int)
 	var currentTurnUIChan = make(chan int)
+	var requestConnectionChan = make(chan raft.RequestConnection)
 
 	stateReqChan, stateChan, actionChan = engine.Start(playerID, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan, currentTurnEngineChan)
 
@@ -217,7 +218,9 @@ func main() {
 		mainConnectedChan,
 		mainDisconnectedChan,
 		outputFile,
-		mode}
+		mode,
+		requestConnectionChan}
+	go raft.ConnectionManager(nil, requestConnectionChan)
 	go manageActions(&opt)
 	go handleCurrentTurn(currentTurnEngineChan, currentTurnUIChan)
 
@@ -236,11 +239,9 @@ func main() {
 	}
 
 	connectedChan <- true
-
 	<-termChan
-	log.Info("Shutting down...")
+	log.Info("Shutting down")
 	uiActionChan <- engine.GameLog{playerID, ui.GetActionID(), "Disconnect", engine.ActionImpl{engine.DISCONNECT, 0}}
-
 	select {
 	case <-mainDisconnectedChan:
 	case <-time.After(time.Millisecond * 5000):
