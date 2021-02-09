@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"go_skeletons/engine"
 	"image"
@@ -45,11 +46,10 @@ type sprite struct {
 var sprites = make(map[string]*sprite)
 
 type uiOptions struct {
-	playerID         engine.PlayerID
-	stateRequestChan chan bool
-	gameStateChan    chan engine.GameState
-	actionChan       chan engine.GameLog
-	bot              bool
+	playerID    engine.PlayerID
+	actionChan  chan engine.GameLog
+	bot         bool
+	uiStateChan chan []byte
 }
 
 type playerPosition struct {
@@ -77,6 +77,8 @@ func newRandomDirection(directionChan chan int) {
 func botBehavior(opt *uiOptions) {
 	var directionChan = make(chan int)
 	var direction = 0
+	var currentIteration = 0
+	var actionIteration = 4
 	var waitingForDirection = false
 	(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.REGISTER}}
 	for {
@@ -84,20 +86,26 @@ func botBehavior(opt *uiOptions) {
 		case newDirection := <-directionChan:
 			direction = newDirection
 			waitingForDirection = false
-		case <-time.After(time.Millisecond * 200):
-			if !waitingForDirection {
-				go newRandomDirection(directionChan)
-				waitingForDirection = true
-			}
-			switch direction {
-			case 0:
-				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.UP}}
-			case 1:
-				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.RIGHT}}
-			case 2:
-				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.DOWN}}
-			case 3:
-				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.LEFT}}
+		case <-time.After(time.Millisecond * 25):
+			if currentIteration == actionIteration {
+				currentIteration = 0
+				if !waitingForDirection {
+					go newRandomDirection(directionChan)
+					waitingForDirection = true
+				}
+				switch direction {
+				case 0:
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.UP}}
+				case 1:
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.RIGHT}}
+				case 2:
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.DOWN}}
+				case 3:
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.LEFT}}
+				}
+			} else {
+				(*opt).actionChan <- engine.GameLog{(*opt).playerID, -1, "NOOP", engine.ActionImpl{engine.NOOP}}
+				currentIteration++
 			}
 		}
 	}
@@ -177,8 +185,10 @@ func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window, k
 		img := image.NewRGBA(image.Rect(0, 0, screenWidth, 200))
 
 		// Get game state
-		(*opt).stateRequestChan <- true
-		gameState := <-(*opt).gameStateChan
+		newJSONState := <-(*opt).uiStateChan
+		var gameState engine.GameState
+		json.Unmarshal(newJSONState, &gameState)
+
 		// Get player position in game map
 		playerData := gameState.Players[(*opt).playerID]
 		playerPosition := playerData.GetPosition()
@@ -292,6 +302,14 @@ func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window, k
 	}
 }
 
+func keepRefreshing(window *screen.Window) {
+	for {
+		time.Sleep(time.Millisecond * 25)
+		var evt key.Event
+		(*window).Send(evt)
+	}
+}
+
 func run(opt *uiOptions) {
 	driver.Main(func(uiScreen screen.Screen) {
 		window, err := uiScreen.NewWindow(&screen.NewWindowOptions{
@@ -304,6 +322,7 @@ func run(opt *uiOptions) {
 
 		killChan := make(chan bool)
 		go paintScreen(opt, uiScreen, window, killChan)
+		go keepRefreshing(&window)
 		(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.REGISTER}}
 		for {
 			e := window.NextEvent()
@@ -327,6 +346,8 @@ func run(opt *uiOptions) {
 					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.DOWN}}
 				} else if e.Code == key.CodeD && e.Direction == key.DirPress {
 					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.RIGHT}}
+				} else {
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, -1, "NOOP", engine.ActionImpl{engine.NOOP}}
 				}
 			case error:
 				log.Print(e)
@@ -359,13 +380,12 @@ func loadImages() {
 	}
 }
 
-func Start(playerID engine.PlayerID, stateRequestChan chan bool, gameStateChan chan engine.GameState, actionChan chan engine.GameLog, bot bool) {
+func Start(playerID engine.PlayerID, actionChan chan engine.GameLog, uiStateChan chan []byte, bot bool) {
 	var opt = &uiOptions{
 		playerID,
-		stateRequestChan,
-		gameStateChan,
 		actionChan,
-		bot}
+		bot,
+		uiStateChan}
 	if (*opt).bot {
 		go botBehavior(opt)
 	} else {

@@ -17,12 +17,12 @@ const (
 	REGISTER   int = 5
 	CONNECT    int = 6
 	DISCONNECT int = 7
+	NOOP       int = 8
 )
 
 type engineOptions struct {
 	playerID             PlayerID
-	requestState         chan bool
-	stateChan            chan GameState
+	stateChan            chan []byte
 	actionChan           chan raft.GameLog
 	snapshotRequestChan  chan bool
 	snapshotResponseChan chan []byte
@@ -120,7 +120,7 @@ func generateDeterministicPlayerStartingPosition(playerID PlayerID) Position {
 	return position
 }
 
-func applyAction(state *GameState, playerID PlayerID, action ActionImpl) {
+func applyAction(state *GameState, playerID PlayerID, action ActionImpl, stateChan chan []byte) {
 	var delta = 0.01
 	playerData := (*state).Players[playerID]
 	var position = playerData.Pos
@@ -160,15 +160,14 @@ func applyAction(state *GameState, playerID PlayerID, action ActionImpl) {
 		var newPosition = generateDeterministicPlayerStartingPosition(playerID)
 		(*state).Players[playerID] = PlayerState{rand.Intn(5), newPosition}
 	}
-
+	jsonState, _ := json.Marshal(*state)
+	stateChan <- jsonState
 }
 
 func run(opt *engineOptions) {
 	var gameState = GameState{make(map[PlayerID]PlayerState)}
 	for {
 		select {
-		case <-(*opt).requestState:
-			(*opt).stateChan <- gameState
 		case <-(*opt).snapshotRequestChan:
 			jsonGameState, _ := json.Marshal(gameState)
 			(*opt).snapshotResponseChan <- jsonGameState
@@ -178,26 +177,22 @@ func run(opt *engineOptions) {
 			var playerID = PlayerID(newAction.Id)
 			var action ActionImpl
 			json.Unmarshal(newAction.Action, &action)
-			applyAction(&gameState, playerID, action)
+			applyAction(&gameState, playerID, action, (*opt).stateChan)
 		}
 	}
 }
 
-func Start(playerID PlayerID, snapshotRequestChan chan bool, snapshotResponseChan chan []byte, installSnapshotChan chan []byte) (chan bool, chan GameState, chan raft.GameLog) {
-	// This channel is used by the UI to request the state of the game
-	var requestState = make(chan bool)
-	// This channel is used to send the state of the game to the UI
-	var stateChan = make(chan GameState)
-	// This channel is used to receive action updates from the Raft network
+func Start(playerID PlayerID, snapshotRequestChan chan bool, snapshotResponseChan chan []byte, installSnapshotChan chan []byte) (chan []byte, chan raft.GameLog) {
+	var stateChan = make(chan []byte)
 	var actionChan = make(chan raft.GameLog)
+
 	var options = engineOptions{
 		playerID,
-		requestState,
 		stateChan,
 		actionChan,
 		snapshotRequestChan,
 		snapshotResponseChan,
 		installSnapshotChan}
 	go run(&options)
-	return requestState, stateChan, actionChan
+	return stateChan, actionChan
 }

@@ -60,6 +60,7 @@ type options struct {
 	snapshotRequestChan    chan bool
 	snapshotResponseChan   chan []byte
 	snapshotInstallChan    chan []byte
+	stateChan              chan []byte
 	connections            *sync.Map
 	numberOfNewConnections int
 	numberOfOldConnections int
@@ -70,7 +71,7 @@ type options struct {
 }
 
 // Start function for server logic
-func Start(mode string, port string, otherServers []ServerID, actionChan chan GameLog, connectedChan chan bool, snapshotRequestChan chan bool, snapshotResponseChan chan []byte, installSnapshotChan chan []byte) *sync.Map {
+func Start(mode string, port string, otherServers []ServerID, actionChan chan GameLog, stateChan chan []byte, connectedChan chan bool, snapshotRequestChan chan bool, snapshotResponseChan chan []byte, installSnapshotChan chan []byte) *sync.Map {
 	var newOptions = &options{
 		mode,
 		newState(port, otherServers, snapshotRequestChan, snapshotResponseChan),
@@ -88,6 +89,7 @@ func Start(mode string, port string, otherServers []ServerID, actionChan chan Ga
 		snapshotRequestChan,
 		snapshotResponseChan,
 		installSnapshotChan,
+		stateChan,
 		nil,
 		0,
 		0,
@@ -157,17 +159,21 @@ func ConnectToRaftServer(opt *options, serverPort ServerID, result chan *RaftCon
 }
 
 func ConnectToRaftServers(opt *options, myID ServerID, otherServers []ServerID) (*sync.Map, int) {
+	var totConnections = len(otherServers)
 	var num = 0
 	const connectionTimeout time.Duration = 300
 	var establishedConnections sync.Map
 	responseChan := make(chan ServerID)
 
-	go EnsureConnectionToServer(opt, myID, [2]bool{false, true}, &establishedConnections, responseChan)
+	if opt != nil {
+		go EnsureConnectionToServer(opt, myID, [2]bool{false, true}, &establishedConnections, responseChan)
+		totConnections++
+	}
 	for i := 0; i < len(otherServers); i++ {
 		go EnsureConnectionToServer(opt, otherServers[i], [2]bool{false, true}, &establishedConnections, responseChan)
 	}
 
-	for i := 0; i < len(otherServers)+1; i++ {
+	for i := 0; i < totConnections; i++ {
 		select {
 		case serverID := <-responseChan:
 			// Mark new connections as NEW
@@ -323,9 +329,9 @@ func handleClientMessages(opt *options) {
 		act := <-(*opt).msgChan
 		switch (*opt)._state.getState() {
 		case Follower:
-			act.ChanResponse <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
+			act.ChanResponse <- &ActionResponse{false, (*opt)._state.getCurrentLeader(), []byte{}}
 		case Candidate:
-			act.ChanResponse <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
+			act.ChanResponse <- &ActionResponse{false, (*opt)._state.getCurrentLeader(), []byte{}}
 		case Leader:
 			if act.Msg.Type == "Connect" {
 				log.Trace("Received request to connect ", act.Msg.Id)
@@ -461,10 +467,7 @@ func handleFollower(opt *options) {
 func handleCandidate(opt *options) {
 	var electionTimeoutTimer = (*opt)._state.checkElectionTimeout()
 	select {
-	// Received message from client: respond with correct leader id
-	case act := <-(*opt).msgChan:
-		act.ChanResponse <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
-		// Receive an AppendEntriesRPC
+	// Receive an AppendEntriesRPC
 	case appEntrArgs := <-(*opt).appendEntriesArgsChan:
 		// Election timeout is stopped in handleAppendEntries if necessary
 		var response = (*opt)._state.handleAppendEntries(appEntrArgs)
@@ -597,7 +600,7 @@ func handleResponseToMessage(opt *options, chanApplied chan bool, chanResponse c
 	const handleResponseTimeout = 500
 	select {
 	case <-chanApplied:
-		chanResponse <- &ActionResponse{true, (*opt)._state.getCurrentLeader()}
+		chanResponse <- &ActionResponse{true, (*opt)._state.getCurrentLeader(), []byte{}}
 	case <-time.After(time.Millisecond * handleResponseTimeout):
 		log.Warning("Timeout waiting for action to be applied")
 	}

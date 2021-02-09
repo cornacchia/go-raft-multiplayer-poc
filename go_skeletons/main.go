@@ -24,9 +24,11 @@ type options struct {
 	connectedChan          chan bool
 	disconnectedChan       chan bool
 	mode                   string
+	nodeMode              string
 	requestConnectionChan  chan raft.RequestConnection
 	requestNewServerIDChan chan bool
 	getNewServerIDChan     chan raft.ServerID
+	uiStateChan           chan []byte
 }
 
 func checkError(err error) {
@@ -94,9 +96,12 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, changeC
 			(*opt).connectedChan <- true
 		} else if msg.Action.Action == engine.DISCONNECT {
 			(*opt).disconnectedChan <- true
-		} else if (*opt).mode == "Test" {
+		} else if msg.Type != "NOOP" && if (*opt).mode == "Test" && (*opt).nodeMode != "Node" {
 			var now = getNowMs()
 			log.Info("Main - Action time: ", (now - timestamp))
+		}
+		if (*opt).nodeMode == "Client" {
+			(*opt).uiStateChan <- (*response).State
 		}
 	case <-time.After(time.Millisecond * waitTime):
 		if msg.Action.Action == engine.CONNECT {
@@ -168,6 +173,7 @@ func main() {
 	termChan := make(chan os.Signal)
 	signal.Notify(termChan, syscall.SIGTERM, syscall.SIGINT)
 	connectedChan := make(chan bool)
+
 	// Command line arguments
 	args := os.Args
 	if len(args) < 4 {
@@ -201,8 +207,8 @@ func main() {
 	var mainDisconnectedChan = make(chan bool)
 	var nodeConnectedChan = make(chan bool)
 	var uiActionChan = make(chan engine.GameLog)
-	var stateReqChan chan bool
-	var stateChan chan engine.GameState
+	var stateChan chan []byte
+	var uiStateChan = make(chan []byte)
 	var actionChan chan raft.GameLog
 	var snapshotRequestChan = make(chan bool)
 	var snapshotResponseChan = make(chan []byte)
@@ -211,9 +217,11 @@ func main() {
 	var requestNewServerIDChan = make(chan bool)
 	var getNewServerIDChan = make(chan raft.ServerID)
 
-	stateReqChan, stateChan, actionChan = engine.Start(playerID, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan)
+	if nodeMode == "Node" {
+		stateChan, actionChan = engine.Start(playerID, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan)
+		var _ = raft.Start(nodeMode, port, otherServers, actionChan, stateChan, nodeConnectedChan, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan)
 
-	var _ = raft.Start(nodeMode, port, otherServers, actionChan, nodeConnectedChan, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan)
+	}
 	var nodeConnections, _ = raft.ConnectToRaftServers(nil, raft.ServerID(port), otherServers)
 
 	var opt = options{
@@ -224,14 +232,16 @@ func main() {
 		mainConnectedChan,
 		mainDisconnectedChan,
 		mode,
+		nodeMode,
 		requestConnectionChan,
 		requestNewServerIDChan,
-		getNewServerIDChan}
+		getNewServerIDChan,
+	  uiStateChan}
 	go connectionPool(&opt)
 	go raft.ConnectionManager(nil, requestConnectionChan)
 	go manageActions(&opt)
 
-	if len(otherServers) > 0 {
+	if nodeMode == "Node" && len(otherServers) > 0 {
 		uiActionChan <- engine.GameLog{playerID, ui.GetActionID(), "Connect", engine.ActionImpl{engine.CONNECT}}
 		// Wait for the node to be fully connected
 		<-mainConnectedChan
@@ -240,19 +250,29 @@ func main() {
 	}
 
 	if nodeMode == "Client" {
-		ui.Start(playerID, stateReqChan, stateChan, uiActionChan, false)
+		ui.Start(playerID, uiActionChan, uiStateChan, false)
 	} else if nodeMode == "Bot" {
-		ui.Start(playerID, stateReqChan, stateChan, uiActionChan, true)
+		ui.Start(playerID, uiActionChan, uiStateChan, true)
 	}
 
 	connectedChan <- true
 	<-termChan
 	log.Info("Main - Shutting down")
-	uiActionChan <- engine.GameLog{playerID, ui.GetActionID(), "Disconnect", engine.ActionImpl{engine.DISCONNECT}}
-	select {
-	case <-mainDisconnectedChan:
-		log.Info("Main - Shutdown complete (clean)")
-	case <-time.After(time.Millisecond * 5000):
-		log.Info("Main - Shutdown complete (timeout)")
+	if nodeMode != "Node" {
+		select {
+		case <-mainDisconnectedChan:
+			log.Info("Main - Shutdown complete (clean)")
+		case <-time.After(time.Millisecond * 5000):
+			log.Info("Main - Shutdown complete (timeout)")
+		}
+	} else {
+		uiActionChan <- engine.GameLog{playerID, ui.GetActionID(), "Disconnect", engine.ActionImpl{engine.DISCONNECT}}
+		select {
+		case <-mainDisconnectedChan:
+			log.Info("Main - Shutdown complete (clean)")
+		case <-time.After(time.Millisecond * 2000):
+			log.Info("Main - Shutdown complete (timeout)")
+		}
 	}
+
 }

@@ -64,6 +64,7 @@ type ActionArgs struct {
 type ActionResponse struct {
 	Applied  bool
 	LeaderID ServerID
+	State    []byte
 }
 
 type RaftListener struct {
@@ -74,9 +75,14 @@ type RaftListener struct {
 	InstallSnapshotArgsChan    chan *InstallSnapshotArgs
 	InstallSnapshtResponseChan chan *InstallSnapshotResponse
 	MessageChan                chan gameAction
+	StateReqChan               chan bool
+	StateResChan               chan []byte
 }
 
 func initRaftListener(lstOptions *options) *RaftListener {
+	stateReqChan := make(chan bool)
+	stateResChan := make(chan []byte)
+	go handleState((*lstOptions).stateChan, stateReqChan, stateResChan)
 	return &RaftListener{
 		(*lstOptions).appendEntriesArgsChan,
 		(*lstOptions).appendEntriesResponseChan,
@@ -84,7 +90,21 @@ func initRaftListener(lstOptions *options) *RaftListener {
 		(*lstOptions).requestVoteResponseChan,
 		(*lstOptions).installSnapshotArgsChan,
 		(*lstOptions).installSnapshotResponseChan,
-		(*lstOptions).msgChan}
+		(*lstOptions).msgChan,
+		stateReqChan,
+		stateResChan}
+}
+
+func handleState(stateUpdateChan chan []byte, stateReqChan chan bool, stateResChan chan []byte) {
+	var state []byte
+	for {
+		select {
+		case newState := <-stateUpdateChan:
+			state = newState
+		case <-stateReqChan:
+			stateResChan <- state
+		}
+	}
 }
 
 func (listener *RaftListener) AppendEntriesRPC(args *AppendEntriesArgs, reply *AppendEntriesResponse) error {
@@ -112,15 +132,24 @@ func (listener *RaftListener) RequestVoteRPC(args *RequestVoteArgs, reply *Reque
 }
 
 func (listener *RaftListener) ActionRPC(args *ActionArgs, reply *ActionResponse) error {
-	chanApplied := make(chan bool, 1)
-	chanResponse := make(chan *ActionResponse)
-	var act = gameAction{
-		GameLog{fmt.Sprint((*args).Id), (*args).ActionId, (*args).Type, (*args).Action, chanApplied},
-		chanResponse}
-	listener.MessageChan <- act
-	repl := <-chanResponse
-	reply.Applied = repl.Applied
-	reply.LeaderID = repl.LeaderID
+	if (*args).Type == "NOOP" {
+		listener.StateReqChan <- true
+		reply.Applied = true
+		reply.LeaderID = ""
+		reply.State = <-listener.StateResChan
+	} else {
+		chanApplied := make(chan bool, 1)
+		chanResponse := make(chan *ActionResponse)
+		var act = gameAction{
+			GameLog{fmt.Sprint((*args).Id), (*args).ActionId, (*args).Type, (*args).Action, chanApplied},
+			chanResponse}
+		listener.MessageChan <- act
+		repl := <-chanResponse
+		listener.StateReqChan <- true
+		reply.Applied = repl.Applied
+		reply.LeaderID = repl.LeaderID
+		reply.State = <-listener.StateResChan
+	}
 	return nil
 }
 
