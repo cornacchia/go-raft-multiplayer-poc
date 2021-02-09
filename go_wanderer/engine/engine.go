@@ -15,6 +15,7 @@ const (
 	REGISTER   int = 5
 	CONNECT    int = 6
 	DISCONNECT int = 7
+	NOOP       int = 8
 )
 
 const MapWidth = 64
@@ -22,13 +23,11 @@ const MapHeight = 64
 
 type engineOptions struct {
 	playerID             PlayerID
-	requestState         chan bool
-	stateChan            chan GameState
+	stateChan            chan []byte
 	actionChan           chan raft.GameLog
 	snapshotRequestChan  chan bool
 	snapshotResponseChan chan []byte
 	installSnapshotChan  chan []byte
-	currentTurnChan      chan int
 }
 
 type PlayerID string
@@ -50,7 +49,8 @@ type Player interface {
 }
 
 type GameState struct {
-	Players map[PlayerID]PlayerState `json:"players"`
+	Players     map[PlayerID]PlayerState `json:"players"`
+	CurrentTurn int                      `json:"turn"`
 }
 
 type ActionImpl struct {
@@ -93,21 +93,13 @@ func getActionTurnFromSnapshot(state *GameState) int {
 	return result
 }
 
-func checkIfTurnChanged(opt *engineOptions, state *GameState) (bool, int) {
-	var result = true
-	var turn = -1
-	if value, found := (*state).Players[(*opt).playerID]; found {
-		turn = value.LastActionTurn
-	}
+func checkIfTurnChanged(opt *engineOptions, state *GameState) bool {
 	for _, value := range (*state).Players {
-		if turn < 0 {
-			turn = value.LastActionTurn
-		} else if value.LastActionTurn < turn {
-			result = false
-			break
+		if value.LastActionTurn != (*state).CurrentTurn {
+			return false
 		}
 	}
-	return result, turn
+	return true
 }
 
 func generateDeterministicPlayerStartingPosition(playerID PlayerID, state *GameState) Position {
@@ -144,7 +136,7 @@ func stateToString(state *GameState) string {
 func applyAction(state *GameState, playerID PlayerID, action ActionImpl, opt *engineOptions) {
 	playerData := (*state).Players[playerID]
 	var position = playerData.Pos
-	// log.Info("Apply log: ", playerID, " - ", action.Turn)
+	fmt.Println("Apply log: ", playerID, " - ", action.Turn, " ", action)
 	switch action.Action {
 	case UP:
 		// Move UP
@@ -182,30 +174,27 @@ func applyAction(state *GameState, playerID PlayerID, action ActionImpl, opt *en
 		// Register new player
 		var newPosition = generateDeterministicPlayerStartingPosition(playerID, state)
 		(*state).Players[playerID] = PlayerState{newPosition, action.Turn}
-		if playerID == (*opt).playerID {
-			(*opt).currentTurnChan <- (*state).Players[playerID].LastActionTurn
-		}
 	}
-	//log.Info(stateToString(state))
-	changed, turn := checkIfTurnChanged(opt, state)
-	// log.Info(changed, turn)
+	fmt.Println(stateToString(state))
+	changed := checkIfTurnChanged(opt, state)
+	fmt.Println(changed, (*state).CurrentTurn)
 	if changed {
-		(*opt).currentTurnChan <- turn + 1
+		(*state).CurrentTurn++
 	}
+	jsonState, _ := json.Marshal(*state)
+	(*opt).stateChan <- jsonState
 }
 
 func run(opt *engineOptions) {
-	var gameState = GameState{make(map[PlayerID]PlayerState)}
+	var gameState = GameState{make(map[PlayerID]PlayerState), 0}
 	for {
 		select {
-		case <-(*opt).requestState:
-			(*opt).stateChan <- gameState
 		case <-(*opt).snapshotRequestChan:
 			jsonGameState, _ := json.Marshal(gameState)
 			(*opt).snapshotResponseChan <- jsonGameState
 		case newJsonState := <-(*opt).installSnapshotChan:
 			json.Unmarshal(newJsonState, &gameState)
-			(*opt).currentTurnChan <- getActionTurnFromSnapshot(&gameState)
+			gameState.CurrentTurn = getActionTurnFromSnapshot(&gameState)
 		case newAction := <-(*opt).actionChan:
 			var playerID = PlayerID(newAction.Id)
 			var action ActionImpl
@@ -215,22 +204,17 @@ func run(opt *engineOptions) {
 	}
 }
 
-func Start(playerID PlayerID, snapshotRequestChan chan bool, snapshotResponseChan chan []byte, installSnapshotChan chan []byte, currentTurnChan chan int) (chan bool, chan GameState, chan raft.GameLog) {
-	// This channel is used by the UI to request the state of the game
-	var requestState = make(chan bool)
-	// This channel is used to send the state of the game to the UI
-	var stateChan = make(chan GameState)
-	// This channel is used to receive action updates from the Raft network
+func Start(playerID PlayerID, snapshotRequestChan chan bool, snapshotResponseChan chan []byte, installSnapshotChan chan []byte) (chan []byte, chan raft.GameLog) {
+	var stateChan = make(chan []byte)
 	var actionChan = make(chan raft.GameLog)
+
 	var options = engineOptions{
 		playerID,
-		requestState,
 		stateChan,
 		actionChan,
 		snapshotRequestChan,
 		snapshotResponseChan,
-		installSnapshotChan,
-		currentTurnChan}
+		installSnapshotChan}
 	go run(&options)
-	return requestState, stateChan, actionChan
+	return stateChan, actionChan
 }

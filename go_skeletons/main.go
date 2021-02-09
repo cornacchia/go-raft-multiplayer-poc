@@ -24,11 +24,11 @@ type options struct {
 	connectedChan          chan bool
 	disconnectedChan       chan bool
 	mode                   string
-	nodeMode              string
+	nodeMode               string
 	requestConnectionChan  chan raft.RequestConnection
 	requestNewServerIDChan chan bool
 	getNewServerIDChan     chan raft.ServerID
-	uiStateChan           chan []byte
+	uiStateChan            chan []byte
 }
 
 func checkError(err error) {
@@ -96,7 +96,7 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, changeC
 			(*opt).connectedChan <- true
 		} else if msg.Action.Action == engine.DISCONNECT {
 			(*opt).disconnectedChan <- true
-		} else if msg.Type != "NOOP" && if (*opt).mode == "Test" && (*opt).nodeMode != "Node" {
+		} else if msg.Type != "NOOP" && (*opt).mode == "Test" && (*opt).nodeMode != "Node" {
 			var now = getNowMs()
 			log.Info("Main - Action time: ", (now - timestamp))
 		}
@@ -236,7 +236,7 @@ func main() {
 		requestConnectionChan,
 		requestNewServerIDChan,
 		getNewServerIDChan,
-	  uiStateChan}
+		uiStateChan}
 	go connectionPool(&opt)
 	go raft.ConnectionManager(nil, requestConnectionChan)
 	go manageActions(&opt)

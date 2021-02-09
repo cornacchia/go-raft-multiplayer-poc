@@ -204,15 +204,21 @@ func testNodesNormal(testMode string, pkgToTest string, number int, testTime int
 		4: {"6670", "6666"},
 	}
 
+	var clientsToTest = map[int][]string{}
+
 	for i := 5; i < number; i++ {
-		// nodesToTest[i] = []string{fmt.Sprint(6666 + i), fmt.Sprint(6666 + (i % 5))}
-		nodesToTest[i] = []string{fmt.Sprint(6666 + i), "6666"}
+		clientsToTest[i-5] = []string{fmt.Sprint(6666 + i), "6666", "6667", "6668", "6669", "6670"}
 	}
 
-	go newCommand(pkgToTest, "Bot", []string{"6666"}, 0)
+	go newCommand(pkgToTest, "Node", []string{"6666"}, 0)
 	time.Sleep(time.Millisecond * 1000)
 	for i, nodes := range nodesToTest {
-		go newCommand(pkgToTest, "Bot", nodes, i)
+		go newCommand(pkgToTest, "Node", nodes, i)
+		time.Sleep(time.Millisecond * 1000)
+	}
+
+	for i, nodes := range clientsToTest {
+		go newCommand(pkgToTest, "Bot", nodes, i+5)
 		time.Sleep(time.Millisecond * 1000)
 	}
 
@@ -222,7 +228,7 @@ func testNodesNormal(testMode string, pkgToTest string, number int, testTime int
 
 	killAll(pkgToTest)
 
-	elaborateResults(0, 0, number, pkgToTest, testTime, testMode)
+	elaborateResults(0, 5, number, pkgToTest, testTime, testMode)
 
 	retChan <- true
 }
@@ -272,13 +278,26 @@ func testNodesDynamic(testMode string, killInterval int, testTime int, pkgToTest
 		4: {"6670", "6666", "6667"},
 	}
 
-	go newCommand(pkgToTest, "Bot", []string{"6666"}, 0)
+	var clientsToTest = map[int][]string{
+		5: {"6671", "6666", "6667", "6668", "6669", "66670"},
+		6: {"6672", "6666", "6667", "6668", "6669", "66670"},
+		7: {"6673", "6666", "6667", "6668", "6669", "66670"},
+		8: {"6674", "6666", "6667", "6668", "6669", "66670"},
+		9: {"6675", "6666", "6667", "6668", "6669", "66670"},
+	}
+
+	go newCommand(pkgToTest, "Node", []string{"6666"}, 0)
 	time.Sleep(time.Millisecond * 1000)
 	for i, nodes := range nodesToTest {
-		go newCommand(pkgToTest, "Bot", nodes, i)
+		go newCommand(pkgToTest, "Node", nodes, i)
 		time.Sleep(time.Millisecond * 1000)
 	}
 	nodesToTest[0] = []string{"6666", "6667", "6668"}
+
+	for i, nodes := range clientsToTest {
+		go newCommand(pkgToTest, "Bot", nodes, i+5)
+		time.Sleep(time.Millisecond * 1000)
+	}
 
 	waitRetChan := make(chan bool)
 	stopKillingWorkersChan := make(chan bool)
@@ -288,7 +307,7 @@ func testNodesDynamic(testMode string, killInterval int, testTime int, pkgToTest
 
 	killAll(pkgToTest)
 
-	elaborateResults(0, 0, len(nodesToTest), pkgToTest, testTime, testMode)
+	elaborateResults(0, 5, len(nodesToTest)+len(clientsToTest), pkgToTest, testTime, testMode)
 	retChan <- true
 }
 

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"go_wanderer/engine"
 	"image"
@@ -28,12 +29,12 @@ var screenSize = image.Point{screenWidth, screenHeight}
 var actionCount int64 = 0
 
 type uiOptions struct {
-	playerID          engine.PlayerID
-	stateRequestChan  chan bool
-	gameStateChan     chan engine.GameState
-	actionChan        chan engine.GameLog
-	currentTurnUIChan chan int
-	bot               bool
+	playerID              engine.PlayerID
+	actionChan            chan engine.GameLog
+	bot                   bool
+	uiStateChan           chan []byte
+	currentTurnUIChan     chan int
+	currentTurnEngineChan chan int
 }
 
 type playerPosition struct {
@@ -61,37 +62,55 @@ func verifyClearToSend(opt *uiOptions, currentTurn int) (bool, int) {
 	return clearToSend, newTurn
 }
 
+func getCurrentTurn(opt *uiOptions) {
+	for {
+		// Get game state
+		newJSONState := <-(*opt).uiStateChan
+		var gameState engine.GameState
+		json.Unmarshal(newJSONState, &gameState)
+		(*opt).currentTurnEngineChan <- gameState.CurrentTurn
+	}
+}
+
 func botBehavior(opt *uiOptions) {
 	var direction = 0
-
+	var currentIteration = 0
+	var actionIteration = 4
+	go getCurrentTurn(opt)
 	(*opt).currentTurnUIChan <- 1
 	currentTurn := <-(*opt).currentTurnUIChan
 	(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.REGISTER, currentTurn}}
 	for {
-		direction = rand.Intn(5)
-		switch direction {
-		case 0:
-			if clear, newTurn := verifyClearToSend(opt, currentTurn); clear {
-				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.UP, newTurn}}
-				currentTurn = newTurn
+		time.Sleep(time.Millisecond * 25)
+		if currentIteration == actionIteration {
+			currentIteration = 0
+			direction = rand.Intn(5)
+			switch direction {
+			case 0:
+				if clear, newTurn := verifyClearToSend(opt, currentTurn); clear {
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.UP, newTurn}}
+					currentTurn = newTurn
+				}
+			case 1:
+				if clear, newTurn := verifyClearToSend(opt, currentTurn); clear {
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.RIGHT, newTurn}}
+					currentTurn = newTurn
+				}
+			case 2:
+				if clear, newTurn := verifyClearToSend(opt, currentTurn); clear {
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.DOWN, newTurn}}
+					currentTurn = newTurn
+				}
+			case 3:
+				if clear, newTurn := verifyClearToSend(opt, currentTurn); clear {
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.LEFT, newTurn}}
+					currentTurn = newTurn
+				}
 			}
-		case 1:
-			if clear, newTurn := verifyClearToSend(opt, currentTurn); clear {
-				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.RIGHT, newTurn}}
-				currentTurn = newTurn
-			}
-		case 2:
-			if clear, newTurn := verifyClearToSend(opt, currentTurn); clear {
-				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.DOWN, newTurn}}
-				currentTurn = newTurn
-			}
-		case 3:
-			if clear, newTurn := verifyClearToSend(opt, currentTurn); clear {
-				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.LEFT, newTurn}}
-				currentTurn = newTurn
-			}
+		} else {
+			(*opt).actionChan <- engine.GameLog{(*opt).playerID, -1, "NOOP", engine.ActionImpl{engine.NOOP, 0}}
+			currentIteration++
 		}
-		time.Sleep(time.Millisecond * 100)
 	}
 }
 
@@ -140,8 +159,10 @@ func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window, k
 		mem := buff.RGBA()
 
 		// Get game state
-		(*opt).stateRequestChan <- true
-		gameState := <-(*opt).gameStateChan
+		newJSONState := <-(*opt).uiStateChan
+		var gameState engine.GameState
+		json.Unmarshal(newJSONState, &gameState)
+		(*opt).currentTurnEngineChan <- gameState.CurrentTurn
 
 		// Get player position in game map
 		playerData := gameState.Players[(*opt).playerID]
@@ -166,6 +187,14 @@ func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window, k
 	}
 }
 
+func keepRefreshing(window *screen.Window) {
+	for {
+		time.Sleep(time.Millisecond * 25)
+		var evt key.Event
+		(*window).Send(evt)
+	}
+}
+
 func run(opt *uiOptions) {
 	driver.Main(func(uiScreen screen.Screen) {
 		window, err := uiScreen.NewWindow(&screen.NewWindowOptions{
@@ -178,6 +207,7 @@ func run(opt *uiOptions) {
 
 		killChan := make(chan bool)
 		go paintScreen(opt, uiScreen, window, killChan)
+		go keepRefreshing(&window)
 		(*opt).currentTurnUIChan <- 1
 		currentTurn := <-(*opt).currentTurnUIChan
 		(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.REGISTER, currentTurn}}
@@ -215,6 +245,8 @@ func run(opt *uiOptions) {
 						(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.RIGHT, newTurn}}
 						currentTurn = newTurn
 					}
+				} else {
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, -1, "NOOP", engine.ActionImpl{engine.NOOP, 0}}
 				}
 			case error:
 				log.Print(e)
@@ -225,14 +257,14 @@ func run(opt *uiOptions) {
 
 // TODO goroutine che gestisca in modo centralizzato il turno
 
-func Start(playerID engine.PlayerID, stateRequestChan chan bool, gameStateChan chan engine.GameState, actionChan chan engine.GameLog, currentTurnUIChan chan int, bot bool) {
+func Start(playerID engine.PlayerID, actionChan chan engine.GameLog, uiStateChan chan []byte, currentTurnUIChan chan int, currentTurnEngineChan chan int, bot bool) {
 	var opt = &uiOptions{
 		playerID,
-		stateRequestChan,
-		gameStateChan,
 		actionChan,
+		bot,
+		uiStateChan,
 		currentTurnUIChan,
-		bot}
+		currentTurnEngineChan}
 	if (*opt).bot {
 		go botBehavior(opt)
 	} else {
