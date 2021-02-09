@@ -220,7 +220,6 @@ func main() {
 	if nodeMode == "Node" {
 		stateChan, actionChan = engine.Start(playerID, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan)
 		var _ = raft.Start(nodeMode, port, otherServers, actionChan, stateChan, nodeConnectedChan, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan)
-
 	}
 	var nodeConnections, _ = raft.ConnectToRaftServers(nil, raft.ServerID(port), otherServers)
 
@@ -274,5 +273,4 @@ func main() {
 			log.Info("Main - Shutdown complete (timeout)")
 		}
 	}
-
 }
