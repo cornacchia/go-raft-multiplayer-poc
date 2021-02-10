@@ -2,7 +2,7 @@ module.exports.regex = {
   raftLogFile: /go_raft_log_(\d+)/,
 
   // log regex
-  time: /time="(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}.\d{6})"/,
+  time: /time="(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}.\d{3}(\d{3}))"/,
   listenerUp: /Raft listener up on port: (\d+)/, // node id
   connectedToNode: /Raft - Connected to node: (\d+)/, // node id
   sendAppendEntriesRPC: /Sending AppendEntriesRPC: (\d+) (\d+) (\d+)/, // node id, first included index, last included index
@@ -13,8 +13,9 @@ module.exports.regex = {
   respondInstallSnapshotRPC: /Respond to InstallSnapshotRPC: (\d+) (.*)"/, // node id, success
   becomeFollower: /Become Follower/,
   becomeCandidate: /Become Candidate/,
-  becomeLeader: /Become Leader: (\d+) (\d+)/, // current term, commit index
+  becomeLeader: /Become Leader: (\d+)/, // current term
   applyLog: /Raft apply log: (\d+) (.*)"/, // log idx, raft log string representation
   shuttingDown: /Shutting down/,
-  actionTimeout: /Action timeout: (\d+)/ // timeout ms
+  actionTimeout: /Action timeout: (\d+)/, // timeout ms
+  addLog: /State - add raft log: (\d+)/, // idx
 }

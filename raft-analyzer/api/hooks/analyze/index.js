@@ -38,6 +38,7 @@ function resetAnalysis() {
       stateMachineSafety: [],
       leaderCompleteness: []
     },
+    addedLogs: {},
     appliedLogs: {}
   }
 }
@@ -58,6 +59,7 @@ function getState() {
 
 async function runAnalysis() {
   if (currentCollection === "") return
+  resetAnalysis()
   sails.log.info(logHeader + 'Run analysis for collection ' + currentCollection)
   runningAnalysis = true
   reset = false
@@ -79,8 +81,15 @@ async function runAnalysis() {
         }
 
         // Leader Completeness check
-        if (log.bl.lc < currentAnalysis.lastCommittedLog) {
+        if (!currentAnalysis.addedLogs[log.n] && currentAnalysis.lastCommittedLog >= 0) {
+          sails.log.warn(logHeader + 'Leader completeness anomaly')
+          const msg = log.n + ' became leader with no logs'
+          sails.log.debug(logHeader + msg)
+        }
+        if (currentAnalysis.addedLogs[log.n] < currentAnalysis.lastCommittedLog) {
           sails.log.warn(logHeader + 'Leader completeness violation')
+          sails.log.debug(logHeader + 'Last leader log (' + log.n + '): ' + currentAnalysis.addedLogs[log.n])
+          sails.log.debug(logHeader + 'Last committed log: ' + currentAnalysis.lastCommittedLog)
           currentAnalysis.violations.leaderCompleteness.push({
             lastCommittedLog: currentAnalysis.lastCommittedLog,
             log: log
@@ -108,6 +117,8 @@ async function runAnalysis() {
           currentAnalysis.lastCommittedLog = log.al.i
         }
       }
+
+      if (log.adl) currentAnalysis.addedLogs[log.n] = log.adl
 
       idx += 1
     }

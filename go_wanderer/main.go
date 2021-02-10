@@ -98,7 +98,7 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConn
 		}
 	case <-time.After(time.Millisecond * actionCallTimeout):
 		if msg.Action.Action == engine.CONNECT {
-			log.Debug("Timeout connecting to raft network")
+			log.Trace("Timeout connecting to raft network")
 			(*opt).actionChan <- msg
 		} else if msg.Action.Action != engine.DISCONNECT && (*opt).mode == "Test" {
 			(*opt).outputFile.Write([]byte("Action dropped"))
@@ -116,7 +116,6 @@ func manageActions(opt *options) {
 	for {
 		select {
 		case msg := <-(*opt).actionChan:
-			log.Trace("Sending action for turn: ", msg.Action.Turn)
 			var timestamp = getNowMs()
 			var actionResponse raft.ActionResponse
 			var jsonAction, _ = json.Marshal(msg.Action)

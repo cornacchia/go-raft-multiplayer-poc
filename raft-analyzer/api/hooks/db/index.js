@@ -42,7 +42,7 @@ async function assignIndexesToLogs(collection) {
 
   var cursor = sails.getDatastore().manager.collection(collection)
     .find({})
-    .sort({t: 1})
+    .sort({ts: 1})
 
   cursor.each((err, doc) => {
     if (err) throw err
@@ -61,6 +61,8 @@ function parseTimestamp(line, obj) {
   if (timeMatch) {
     const timeString = timeMatch[1]
     obj.t = new Date(Date.parse(timeString))
+    const microseconds = parseInt(timeMatch[2])
+    obj.ts = (obj.t.getTime() * 1000) + microseconds
   }
 }
 
@@ -152,8 +154,7 @@ function parseBecomeLeader(line, obj) {
   const becomeLeaderMatch = sails.config.regex.becomeLeader.exec(line)
   if (becomeLeaderMatch) {
     const term = becomeLeaderMatch[1]
-    const lastCommit = becomeLeaderMatch[2]
-    obj.bl = { t: parseInt(term), lc: parseInt(lastCommit) }
+    obj.bl = { t: parseInt(term) }
   }
 }
 
@@ -181,6 +182,14 @@ function parseActionTimeout(line, obj) {
   }
 }
 
+function parseAddLog(line, obj) {
+  const addLogMatch = sails.config.regex.addLog.exec(line)
+  if (addLogMatch) {
+    const logIdx = addLogMatch[1]
+    obj.adl = parseInt(logIdx)
+  }
+}
+
 function parseLogLine(line, nodeId) {
   let result = { n: nodeId }
   parseTimestamp(line, result)
@@ -198,6 +207,7 @@ function parseLogLine(line, nodeId) {
   parseApplyLog(line, result)
   parseShuttingDown(line, result)
   parseActionTimeout(line, result)
+  parseAddLog(line, result)
 
   return result
 }
@@ -224,6 +234,7 @@ async function loadLogFile(file, collection, nodeId) {
 // At this point we are sure that dirPath exists and collection does not exist in db
 async function loadLogsIntoCollection(dirPath, collection) {
   await sails.getDatastore().manager.collection(collection).createIndex({ t: 1 })
+  await sails.getDatastore().manager.collection(collection).createIndex({ ts: 1 })
   await sails.getDatastore().manager.collection(collection).createIndex({ i: 1 })
   await sails.getDatastore().manager.collection(collection).createIndex({ n: 1 })
   let files

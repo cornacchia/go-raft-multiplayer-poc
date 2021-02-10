@@ -83,7 +83,7 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConn
 		}
 	case <-time.After(time.Millisecond * actionCallTimeout):
 		if msg.Action.Action == engine.CONNECT {
-			log.Debug("Timeout connecting to raft network")
+			log.Trace("Timeout connecting to raft network")
 			(*opt).actionChan <- msg
 		} else if msg.Action.Action != engine.DISCONNECT && (*opt).mode == "Test" {
 			(*opt).outputFile.Write([]byte("Action dropped"))
@@ -114,7 +114,6 @@ func manageActions(opt *options) {
 				go handleActionResponse(actionCall, &actionResponse, newConnectionID, msg, timestamp, opt)
 			}
 		case newLeaderID := <-newConnectionID:
-			log.Trace("Main: New leader id ", newLeaderID)
 			currentConnection = newLeaderID
 			var _, found = (*(*opt).connections).Load(currentConnection)
 			if !found {
@@ -137,7 +136,7 @@ func main() {
 	// Seed random number generator
 	rand.Seed(time.Now().UnixNano())
 
-	log.SetLevel(log.InfoLevel)
+	log.SetLevel(log.DebugLevel)
 	customFormatter := new(log.TextFormatter)
 	customFormatter.TimestampFormat = "2006-01-02 15:04:05.000000"
 	log.SetFormatter(customFormatter)

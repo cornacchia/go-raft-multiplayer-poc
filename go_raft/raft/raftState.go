@@ -297,7 +297,7 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new
 }
 
 func (_state *stateImpl) winElection() {
-	log.Info("Become Leader: ", _state.currentTerm, " ", _state.commitIndex)
+	log.Info("Become Leader: ", _state.currentTerm)
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
 	_state.currentElectionVotesOld = 0
 	_state.currentElectionVotesNew = 0
@@ -375,7 +375,7 @@ func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
 	// Keep track of the last log actually sent to a follower
 	if len(logsToSend) > 0 {
 		_state.lastSentLogIndex[id] = logsToSend[len(logsToSend)-1].Idx
-		log.Trace(fmt.Sprintf("Sending %d logs to node %s (start: %d, end: %d)", len(logsToSend), id, logsToSend[0].Idx, logsToSend[len(logsToSend)-1].Idx))
+		log.Trace("Sending ", len(logsToSend), " logs to node ", id, " (start: ", logsToSend[0].Idx, ", end: ", logsToSend[len(logsToSend)-1].Idx, ")")
 	} else {
 		_state.lastSentLogIndex[id] = serverNextIdx - 1
 	}
@@ -485,13 +485,13 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 		if nextIdx >= _state.nextLogArrayIdx {
 			_state.logs[nextIdx] = (*aea).Entries[i]
 			_state.nextLogArrayIdx = nextIdx + 1
-			log.Trace(fmt.Sprintf("State - add raft log (type: %d, idx: %d, arr: %d)\n", (*aea).Entries[i].Type, (*aea).Entries[i].Idx, nextIdx))
+			log.Info("State - add raft log: ", (*aea).Entries[i].Idx)
 		} else {
 			// If the terms conflict (different index or same index and different terms) remove all the remaining logs
 			if _state.logs[nextIdx].Idx != (*aea).Entries[i].Idx || _state.logs[nextIdx].Term != (*aea).Entries[i].Term {
 				_state.logs[nextIdx] = (*aea).Entries[i]
 				_state.nextLogArrayIdx = nextIdx + 1
-				log.Trace(fmt.Sprintf("State - add raft log (type: %d, idx: %d, arr: %d)\n", (*aea).Entries[i].Type, (*aea).Entries[i].Idx, nextIdx))
+				log.Info("State - add raft log: ", (*aea).Entries[i].Idx)
 			}
 			// Otherwise we should be confident that the logs are the same and need not be replaced
 		}
@@ -532,7 +532,7 @@ func (_state *stateImpl) updateLastApplied() int {
 		if logIdx >= 0 {
 			_state.lastApplied++
 		}
-		log.Debug(fmt.Sprintf("State: update last applied (log: %d, arr: %d)\n", _state.lastApplied, logIdx))
+		log.Trace("State: update last applied (log: ", _state.lastApplied, ", arr: ", logIdx, ", commit: ", _state.commitIndex, ")")
 		return logIdx
 	}
 	return -1
@@ -549,7 +549,7 @@ func (_state *stateImpl) checkMajority(newCount int, oldCount int) bool {
 	if (*_state).oldServerCount > 0 {
 		oldMajority = oldCount > ((*_state).oldServerCount)/2
 	}
-	log.Trace(fmt.Sprintf("State check majority: new %d/%d, old %d/%d", newCount, (*_state).newServerCount, oldCount, (*_state).oldServerCount))
+	// log.Trace(fmt.Sprintf("State check majority: new %d/%d, old %d/%d", newCount, (*_state).newServerCount, oldCount, (*_state).oldServerCount))
 	return newMajority && oldMajority
 }
 
@@ -639,8 +639,8 @@ func (_state *stateImpl) updateServerConfiguration(sid ServerID, conf [2]bool) {
 			_state.newServerCount++
 		}
 	}
-	log.Debug("State: Update server configuration ", _state.serverConfiguration)
-	log.Debug(fmt.Sprintf("State: new: %d, old: %d", _state.newServerCount, _state.oldServerCount))
+	log.Trace("State: Update server configuration ", _state.serverConfiguration)
+	log.Trace("State: new: ", _state.newServerCount, ", old: ", _state.oldServerCount)
 	if _, found := _state.serverLastActionApplied[sid]; !found {
 		_state.serverLastActionApplied[sid] = -1
 	}
@@ -666,7 +666,7 @@ func (_state *stateImpl) getNewServerResponseChan(id ServerID) chan bool {
 func (_state *stateImpl) copyLogsToBeginningOfRecord(startLog int) {
 	var restartIdx = 0
 	for startLog+restartIdx < _state.nextLogArrayIdx {
-		log.Trace("Copy log from ", startLog+restartIdx, "(", _state.logs[startLog+restartIdx].Idx, ")", "to ", restartIdx)
+		// log.Trace("Copy log from ", startLog+restartIdx, "(", _state.logs[startLog+restartIdx].Idx, ")", "to ", restartIdx)
 		_state.logs[restartIdx] = _state.logs[startLog+restartIdx]
 		restartIdx++
 	}
@@ -680,7 +680,7 @@ func (_state *stateImpl) takeSnapshot() bool {
 	if !found {
 		return false
 	}
-	log.Trace("Taking snapshot (arr: ", lastAppliedIdx, ", idx: ", _state.logs[lastAppliedIdx].Idx, ", term: ", _state.logs[lastAppliedIdx].Term, ")")
+	// log.Trace("Taking snapshot (arr: ", lastAppliedIdx, ", idx: ", _state.logs[lastAppliedIdx].Idx, ", term: ", _state.logs[lastAppliedIdx].Term, ")")
 	var newSnapshot = snapshot{
 		_state.serverConfiguration,
 		_state.oldServerCount,
@@ -741,7 +741,7 @@ func (_state *stateImpl) checkIfSnapshotShouldBeInstalled(isa *InstallSnapshotAr
 }
 
 func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) *InstallSnapshotResponse {
-	log.Debug("Received install snapshot request")
+	log.Trace("Received install snapshot request")
 	if !_state.checkIfSnapshotShouldBeInstalled(isa) {
 		return &InstallSnapshotResponse{_state.id, _state.currentTerm, false, -1, -1}
 	}
@@ -785,7 +785,7 @@ func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) 
 		}
 	*/
 
-	log.Debug("State: install snapshot ", (*isa).LastIncludedIndex)
+	log.Trace("State: install snapshot ", (*isa).LastIncludedIndex)
 	return &InstallSnapshotResponse{_state.id, _state.currentTerm, true, (*isa).LastIncludedIndex, (*isa).LastIncludedTerm}
 }
 

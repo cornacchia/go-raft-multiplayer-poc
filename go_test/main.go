@@ -14,8 +14,6 @@ import (
 	"time"
 )
 
-const timeToWait = 180
-
 type execStats struct {
 	node      int
 	totValue  int64
@@ -41,7 +39,12 @@ func baseNode(pkgToTest string) {
 }
 
 func newCommand(pkgToTest string, mode string, port int, startLeaderPort int, idx int) {
-	cmd := exec.Command("./"+pkgToTest, "Test", mode, fmt.Sprint(port), fmt.Sprint(startLeaderPort))
+	var cmd *exec.Cmd
+	if startLeaderPort >= 0 {
+		cmd = exec.Command("./"+pkgToTest, "Test", mode, fmt.Sprint(port), fmt.Sprint(startLeaderPort))
+	} else {
+		cmd = exec.Command("./"+pkgToTest, "Test", mode, fmt.Sprint(port))
+	}
 	cmd.Dir = "../" + pkgToTest
 	// cmd.Stderr = os.Stderr
 	openCmds[idx] = cmd
@@ -54,11 +57,17 @@ func newCommand(pkgToTest string, mode string, port int, startLeaderPort int, id
 	cmd.Wait()
 }
 
+func killProcess(i int, signal syscall.Signal) {
+	if openCmds[i] != nil {
+		(*openCmds[i]).Process.Signal(signal)
+		(*openCmds[i]).Wait()
+	}
+}
+
 func killAll() {
 	fmt.Println("Killall: ", numberOfCmds)
 	for idx := 0; idx < numberOfCmds; idx++ {
-		(*openCmds[idx]).Process.Signal(syscall.SIGTERM)
-		(*openCmds[idx]).Wait()
+		killProcess(idx, syscall.SIGTERM)
 	}
 }
 
@@ -69,7 +78,6 @@ func analyzeNodeBehavior(node int) {
 	var newTurnRegex = regexp.MustCompile("New turn: ([0-9]+)")
 	var raftLogIdxRegex = regexp.MustCompile("Raft apply log: ([0-9]+)")
 	var stateSnapshotIdxRegex = regexp.MustCompile("State: install snapshot ([0-9]+)")
-	var shuttingDownRegex = regexp.MustCompile("Shutting down...")
 
 	file, _ := os.Open("/tmp/go_raft_log_" + fmt.Sprint(node))
 	fileScanner := bufio.NewScanner(file)
@@ -85,7 +93,6 @@ func analyzeNodeBehavior(node int) {
 	for _, line := range fileTextLines {
 		var matchLogIdx = raftLogIdxRegex.FindStringSubmatch(line)
 		var matchSnapshotIdx = stateSnapshotIdxRegex.FindStringSubmatch(line)
-		var matchShuttingDown = shuttingDownRegex.FindString(line)
 		var matchNewTurn = newTurnRegex.FindStringSubmatch(line)
 		if matchLogIdx != nil {
 			var newRaftLogReceived, _ = strconv.Atoi(matchLogIdx[1])
@@ -102,9 +109,6 @@ func analyzeNodeBehavior(node int) {
 		if matchNewTurn != nil {
 			var newTurn, _ = strconv.Atoi(matchNewTurn[1])
 			lastTurn = newTurn
-		}
-		if matchShuttingDown != "" {
-			break
 		}
 	}
 	if lastTurn >= 0 {
@@ -166,38 +170,15 @@ func appendResultsToFile(filename string, text string) {
 	}
 }
 
-func testNodes(pkgToTest string, number int, retChan chan bool) {
-
-	removeAllLogFiles()
-	fmt.Println("###################################")
-	fmt.Println("##### Test for ", number, " nodes")
-	// Start base nodes
-	go baseNode(pkgToTest)
-	time.Sleep(time.Millisecond * 1000)
-	go newCommand(pkgToTest, "Node", 6667, 6666, 1)
-	time.Sleep(time.Millisecond * 1000)
-	go newCommand(pkgToTest, "Node", 6668, 6666, 2)
-	time.Sleep(time.Millisecond * 1000)
-	go newCommand(pkgToTest, "Node", 6669, 6666, 3)
-	time.Sleep(time.Millisecond * 1000)
-	go newCommand(pkgToTest, "Node", 6670, 6666, 4)
-	time.Sleep(time.Millisecond * 1000)
-
-	for i := 5; i < number; i++ {
-		go newCommand(pkgToTest, "Bot", 6666+i, 6666+(i%5), i)
-		time.Sleep(time.Millisecond * 1000)
-	}
-	time.Sleep(time.Second * timeToWait)
-	killAll()
-
+func elaborateResults(start int, clientStart int, stop int, pkgToTest string, testTime int, testMode string) {
 	var totalActionDelayMs float64 = 0
 	var totalActionSent int64 = 0
 	var totalDropped int64 = 0
 	var nOfEntries int = 0
 	var notStarted int = 0
-	for i := 0; i < number; i++ {
+	for i := start; i < stop; i++ {
 		analyzeNodeBehavior(6666 + i)
-		if i >= 5 {
+		if i >= clientStart {
 			result := readResults(6666 + i)
 			// fmt.Println(result)
 			if result.nOfValues > 0 {
@@ -217,10 +198,109 @@ func testNodes(pkgToTest string, number int, retChan chan bool) {
 	var resultAtionDelayMs = totalActionDelayMs / float64(nOfEntries)
 	var resultDropped = float64(totalDropped) / float64(nOfEntries)
 	var resultActionSent = float64(totalActionSent) / float64(nOfEntries)
-	var actionsPerSecond = float64(resultActionSent) / float64(timeToWait)
-	fmt.Println(fmt.Sprintf("Mean for %d nodes => actions: %.3f, actions per second: %.3f, delay: %.3f, dropped: %.3f", number, resultActionSent, actionsPerSecond, resultAtionDelayMs, resultDropped))
-	appendResultsToFile("./results/"+pkgToTest, fmt.Sprintf("%d %.3f %.3f %.3f %.3f", number, resultActionSent, actionsPerSecond, resultAtionDelayMs, resultDropped))
+	var actionsPerSecond = float64(resultActionSent) / float64(testTime)
+	fmt.Println(fmt.Sprintf("Mean for %d nodes => actions: %.3f, actions per second: %.3f, delay: %.3f, dropped: %.3f", stop, resultActionSent, actionsPerSecond, resultAtionDelayMs, resultDropped))
+	appendResultsToFile("./results/"+pkgToTest+"_"+testMode, fmt.Sprintf("%d %.3f %.3f %.3f %.3f", stop, resultActionSent, actionsPerSecond, resultAtionDelayMs, resultDropped))
+}
+
+func waitSomeTime(duration time.Duration, retChans []chan bool) {
+	time.Sleep(time.Second * duration)
+	for _, ch := range retChans {
+		ch <- true
+	}
+}
+
+func testNodes(testMode string, pkgToTest string, number int, testTime int, retChan chan bool) {
+	removeAllLogFiles()
+	fmt.Println("###################################")
+	fmt.Println("##### Normal test for ", number, " nodes")
+	// Start base nodes
+	go baseNode(pkgToTest)
+	time.Sleep(time.Millisecond * 1000)
+	go newCommand(pkgToTest, "Node", 6667, 6666, 1)
+	time.Sleep(time.Millisecond * 1000)
+	go newCommand(pkgToTest, "Node", 6668, 6666, 2)
+	time.Sleep(time.Millisecond * 1000)
+	go newCommand(pkgToTest, "Node", 6669, 6666, 3)
+	time.Sleep(time.Millisecond * 1000)
+	go newCommand(pkgToTest, "Node", 6670, 6666, 4)
+	time.Sleep(time.Millisecond * 1000)
+
+	for i := 5; i < number; i++ {
+		go newCommand(pkgToTest, "Bot", 6666+i, 6666+(i%5), i)
+		time.Sleep(time.Millisecond * 1000)
+	}
+
+	waitRetChan := make(chan bool)
+	go waitSomeTime(time.Duration(testTime), []chan bool{waitRetChan})
+	<-waitRetChan
+	killAll()
+
+	elaborateResults(0, 5, number, pkgToTest, testTime, testMode)
+
 	retChan <- true
+}
+
+func testNormal(testMode string, start int, stop int, step int, testTime int, pkgToTest string) {
+	for i := start; i <= stop; i += step {
+		retChan := make(chan bool)
+		go testNodes(testMode, pkgToTest, i, testTime, retChan)
+		<-retChan
+		time.Sleep(time.Second * 10)
+	}
+}
+
+func killWorkers(pkgToTest string, signal syscall.Signal, retChan chan bool, nodesToTest map[int][2]int) {
+	var currentWorkerIdx = 0
+	for {
+		select {
+		case <-retChan:
+			return
+		case <-time.After(time.Second * 20):
+			killProcess(currentWorkerIdx, signal)
+			time.Sleep(time.Second * 5)
+			var val, _ = nodesToTest[currentWorkerIdx]
+			go newCommand(pkgToTest, "Bot", val[0], val[1], currentWorkerIdx)
+			currentWorkerIdx = (currentWorkerIdx + 1) % len(nodesToTest)
+		}
+	}
+}
+
+func testDynamic(testMode string, testTime int, pkgToTest string, signal syscall.Signal) {
+	removeAllLogFiles()
+	fmt.Println("###################################")
+	fmt.Print("##### Dynamic test for nodes: ")
+	if signal == syscall.SIGTERM {
+		fmt.Println("SIGTERM")
+	} else {
+		fmt.Println("SIGKILL")
+	}
+
+	var nodesToTest = map[int][2]int{
+		1: {6667, 6666},
+		2: {6668, 6666},
+		3: {6669, 6666},
+		4: {6670, 6666},
+	}
+
+	go newCommand(pkgToTest, "Bot", 6666, -1, 0)
+	time.Sleep(time.Millisecond * 200)
+	for i, nodes := range nodesToTest {
+		go newCommand(pkgToTest, "Bot", nodes[0], nodes[1], i)
+		time.Sleep(time.Millisecond * 200)
+	}
+	nodesToTest[0] = [2]int{6666, 6667}
+
+	waitRetChan := make(chan bool)
+	stopKillingWorkersChan := make(chan bool)
+	go waitSomeTime(time.Duration(testTime), []chan bool{stopKillingWorkersChan, waitRetChan})
+	go killWorkers(pkgToTest, signal, stopKillingWorkersChan, nodesToTest)
+	<-waitRetChan
+
+	time.Sleep(time.Second * time.Duration(testTime))
+	killAll()
+
+	elaborateResults(0, 0, len(nodesToTest), pkgToTest, testTime, testMode)
 }
 
 func handlePrematureTermination(termChan chan os.Signal, completeChan chan bool) {
@@ -232,11 +312,11 @@ func handlePrematureTermination(termChan chan os.Signal, completeChan chan bool)
 	}
 }
 
-func estimateTimeOfExecution(start int, stop int, step int) float64 {
+func estimateTimeOfExecution(start int, stop int, step int, testTime int) float64 {
 	var result = 0.0
 	for i := start; i <= stop; i += step {
 		result += float64(i)
-		result += timeToWait
+		result += float64(testTime)
 		result += 10
 	}
 	return result
@@ -244,33 +324,31 @@ func estimateTimeOfExecution(start int, stop int, step int) float64 {
 
 func main() {
 	args := os.Args
-	if len(args) < 5 {
-		log.Fatal("Usage: go_test <go_skeletons | go_wanderer | both> <start> <finish> <step>")
+	if len(args) < 4 {
+		log.Fatal("Usage: go_test <dynamic | faulty | normal> <go_skeletons | go_wanderer> <time> [<start> <finish> <step>]")
 	}
-	var pkgToTest = args[1]
-	var startStr = args[2]
-	var stopStr = args[3]
-	var stepStr = args[4]
-	var start, _ = strconv.Atoi(startStr)
-	var stop, _ = strconv.Atoi(stopStr)
-	var step, _ = strconv.Atoi(stepStr)
-	var both = false
-	if pkgToTest == "both" {
-		both = true
+	var testMode = args[1]
+	var pkgToTest = args[2]
+	var testTimeStr = args[3]
+	var testTime, _ = strconv.Atoi(testTimeStr)
+	var start = -1
+	var stop = -1
+	var step = -1
+	if len(args) > 4 {
+		var startStr = args[4]
+		var stopStr = args[5]
+		var stepStr = args[6]
+		start, _ = strconv.Atoi(startStr)
+		stop, _ = strconv.Atoi(stopStr)
+		step, _ = strconv.Atoi(stepStr)
 	}
 
-	var estTimeOfExecution = estimateTimeOfExecution(start, stop, step)
-	if both {
-		estTimeOfExecution *= 2
+	if testMode == "normal" {
+		var estTimeOfExecution = estimateTimeOfExecution(start, stop, step, testTime)
+		fmt.Println(fmt.Sprintf("Est. time to wait: %.2f seconds (~%d minutes)", estTimeOfExecution, int(estTimeOfExecution)/60))
 	}
-	fmt.Println(fmt.Sprintf("Est. time to wait: %.2f seconds (~%d minutes)", estTimeOfExecution, int(estTimeOfExecution)/60))
 
-	if both {
-		os.Remove("./results/go_skeletons")
-		os.Remove("./results/go_wanderer")
-	} else {
-		os.Remove("./results/" + pkgToTest)
-	}
+	os.Remove("./results/" + pkgToTest + "_" + testMode)
 
 	completeChan := make(chan bool)
 	termChan := make(chan os.Signal)
@@ -278,26 +356,12 @@ func main() {
 
 	go handlePrematureTermination(termChan, completeChan)
 
-	if both {
-		for i := start; i <= stop; i += step {
-			retChan := make(chan bool)
-			go testNodes("go_skeletons", i, retChan)
-			<-retChan
-			time.Sleep(time.Second * 10)
-		}
-		for i := start; i <= stop; i += step {
-			retChan := make(chan bool)
-			go testNodes("go_wanderer", i, retChan)
-			<-retChan
-			time.Sleep(time.Second * 10)
-		}
-	} else {
-		for i := start; i <= stop; i += step {
-			retChan := make(chan bool)
-			go testNodes(pkgToTest, i, retChan)
-			<-retChan
-			time.Sleep(time.Second * 10)
-		}
+	if testMode == "normal" {
+		testNormal(testMode, start, stop, step, testTime, pkgToTest)
+	} else if testMode == "dynamic" {
+		testDynamic(testMode, testTime, pkgToTest, syscall.SIGTERM)
+	} else if testMode == "faulty" {
+		testDynamic(testMode, testTime, pkgToTest, syscall.SIGKILL)
 	}
 
 	completeChan <- true
