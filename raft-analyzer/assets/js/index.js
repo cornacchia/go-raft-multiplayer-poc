@@ -71,8 +71,8 @@ function getLogHtml(log) {
   }
   if (log.bf) htmlString += 'Become Follower'
   if (log.bc) htmlString += 'Become Candidate'
-  if (log.bl) htmlString += 'Become Leader (term: ' + log.bl + ')'
-  if (log.al) htmlString += 'Apply log: ' + log.al
+  if (log.bl) htmlString += 'Become Leader (term: ' + log.bl.t + ')'
+  if (log.al) htmlString += 'Apply log: ' + log.al.i
   if (log.sd) htmlString += 'Shutting down'
   return htmlString
 }

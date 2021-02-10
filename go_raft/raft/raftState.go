@@ -290,7 +290,7 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new
 }
 
 func (_state *stateImpl) winElection() {
-	log.Info("Become Leader: ", _state.currentTerm)
+	log.Info("Become Leader: ", _state.currentTerm, " ", _state.commitIndex)
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
 	_state.currentElectionVotesOld = 0
 	_state.currentElectionVotesNew = 0

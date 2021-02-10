@@ -93,6 +93,7 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConn
 			(*opt).disconnectedChan <- true
 		} else if (*opt).mode == "Test" {
 			var now = getNowMs()
+			log.Info("Action timeout: ", (now - timestamp))
 			(*opt).outputFile.Write([]byte(fmt.Sprintf("%v\n", (now - timestamp))))
 		}
 	case <-time.After(time.Millisecond * actionCallTimeout):

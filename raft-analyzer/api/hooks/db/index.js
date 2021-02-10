@@ -152,7 +152,11 @@ function parseBecomeLeader(line, obj) {
   const becomeLeaderMatch = sails.config.regex.becomeLeader.exec(line)
   if (becomeLeaderMatch) {
     const term = becomeLeaderMatch[1]
-    obj.bl = term
+    const lastCommit = becomeLeaderMatch[2]
+    obj.bl = {
+      t: term,
+      lc: lastCommit
+    }
   }
 }
 
@@ -160,7 +164,11 @@ function parseApplyLog(line, obj) {
   const applyLogMatch = sails.config.regex.applyLog.exec(line)
   if (applyLogMatch) {
     const idx = applyLogMatch[1]
-    obj.al = idx
+    const log = applyLogMatch[2]
+    obj.al = {
+      i: idx,
+      l: log
+    }
   }
 }
 
@@ -168,6 +176,14 @@ function parseShuttingDown(line, obj) {
   const shuttingDownMatch = sails.config.regex.shuttingDown.exec(line)
   if (shuttingDownMatch) {
     obj.sd = true
+  }
+}
+
+function parseActionTimeout(line, obj) {
+  const actionTimeoutMatch = sails.config.regex.actionTimeout.exec(line)
+  if (actionTimeoutMatch) {
+    const timeout = actionTimeoutMatch[1]
+    obj.at = timeout
   }
 }
 
@@ -187,6 +203,7 @@ function parseLogLine(line, nodeId) {
   parseBecomeLeader(line, result)
   parseApplyLog(line, result)
   parseShuttingDown(line, result)
+  parseActionTimeout(line, result)
 
   return result
 }

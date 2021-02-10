@@ -78,6 +78,7 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConn
 			(*opt).disconnectedChan <- true
 		} else if (*opt).mode == "Test" {
 			var now = getNowMs()
+			log.Info("Action timeout: ", (now - timestamp))
 			(*opt).outputFile.Write([]byte(fmt.Sprintf("%v\n", (now - timestamp))))
 		}
 	case <-time.After(time.Millisecond * actionCallTimeout):
@@ -136,7 +137,7 @@ func main() {
 	// Seed random number generator
 	rand.Seed(time.Now().UnixNano())
 
-	log.SetLevel(log.DebugLevel)
+	log.SetLevel(log.InfoLevel)
 	customFormatter := new(log.TextFormatter)
 	customFormatter.TimestampFormat = "2006-01-02 15:04:05.000000"
 	log.SetFormatter(customFormatter)
