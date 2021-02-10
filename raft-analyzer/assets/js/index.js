@@ -11,6 +11,9 @@ let serverState = {
   dbState: {
     loadingLogs: false,
     error: ""
+  },
+  analyze: {
+    runningAnalysis: false
   }
 }
 
@@ -122,6 +125,19 @@ function renderState(state) {
   if (_.isNil(playInterval)) $('.logCmd.manual').prop('disabled', false)
 }
 
+function renderCurrentAnalysis(analysis) {
+  $('#currentAnalysis').text(JSON.stringify(analysis))
+}
+
+function renderAnalyze(analyze) {
+  if (!analyze.runningAnalysis) {
+    $('#analyzeMsg').attr('hidden', true)
+    if (analyze.currentAnalysis.lastLeaderTerm >= 0) {
+      renderCurrentAnalysis(analyze.currentAnalysis)
+    }
+  }
+}
+
 function fetchState() {
   $('#logLoadingMsg').removeAttr('hidden')
   if (_.isNil(playInterval)) $('.logCmd.manual').prop('disabled', true)
@@ -151,8 +167,9 @@ function setNewIdx() {
   }
 }
 
-function loadAndAnalyzeLogs() {
-  $('#loadAndAnalyzeLogs').prop('disabled', true)
+function loadLogs() {
+  $('#loadLogs').prop('disabled', true)
+  $('#analyzeLogs').prop('disabled', true)
   $('#raft-log-folder').prop('disabled', true)
   $('#db-collection').prop('disabled', true)
   $('#collectionSelect').prop('disabled', true)
@@ -164,6 +181,12 @@ function loadAndAnalyzeLogs() {
   $.post('/loadLogs', {raftLogFolder, collectionName})
 }
 
+function analyzeLogs() {
+  $('#analyzeLogs').prop('disabled', true)
+  $('#analyzeMsg').removeAttr('hidden')
+  $.post('/analyzeLogs')
+}
+
 function updateCollection(res) {
   $('.logCmd').prop('disabled', false)
   clientState.nOfDocs = res.count
@@ -171,6 +194,7 @@ function updateCollection(res) {
   $('#nOfDocs').text(res.count)
   $('#currentIdx').val(clientState.currentIdx)
   renderState(res.state)
+  $('#analyzeLogs').prop('disabled', false)
 }
 
 function setNewCollection(evt) {
@@ -198,7 +222,8 @@ function renderLoadingLogs(loadingLogs) {
     $('#loadingMsg').removeAttr('hidden')
   } else {
     $('#loadingMsg').attr('hidden', true)
-    $('#loadAndAnalyzeLogs').prop('disabled', false)
+    $('#loadLogs').prop('disabled', false)
+    $('#analyzeLogs').prop('disabled', false)
     $('#raft-log-folder').prop('disabled', false)
     $('#db-collection').prop('disabled', false)
     $('#collectionSelect').prop('disabled', false)
@@ -217,11 +242,14 @@ function renderError(error) {
 
 function updateState(state) {
   if (!_.isEqual(serverState.collections, state.collections)) renderCollections(state.collections)
-  if (serverState.dbState.loadingLogs != state.dbState.loadingLogs) {
+  if (serverState.dbState.loadingLogs !== state.dbState.loadingLogs) {
     renderLoadingLogs(state.dbState.loadingLogs)
   }
-  if (serverState.dbState.error != state.dbState.error) {
+  if (serverState.dbState.error !== state.dbState.error) {
     renderError(state.dbState.error)
+  }
+  if (serverState.analyze.runningAnalysis !== state.analyze.runningAnalysis) {
+    renderAnalyze(state.analyze)
   }
   serverState = state
 }
@@ -242,7 +270,8 @@ function stopAutoPlay() {
 }
 
 function start() {
-  $("#loadAndAnalyzeLogs").on('click', loadAndAnalyzeLogs)
+  $("#loadLogs").on('click', loadLogs)
+  $('#analyzeLogs').on('click', analyzeLogs)
   $("#prevLog").on('click', prevLog)
   $("#nextLog").on('click', nextLog)
   $('#play').on('click', autoPlay)

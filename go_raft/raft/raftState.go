@@ -99,6 +99,13 @@ type stateImpl struct {
 	snapshotResponseChan    chan []byte
 }
 
+func raftLogToString(log RaftLog) string {
+	if log.Type == Game {
+		return fmt.Sprint(log.Log.Id, " ", log.Log.ActionId, " ", log.Log.Type, " ", log.Log.Action)
+	}
+	return fmt.Sprint(log.ConfigurationLog.Id, " ", log.ConfigurationLog.ConnMap, " ", log.ConfigurationLog.OldCount, " ", log.ConfigurationLog.NewCount)
+}
+
 func newGameRaftLog(idx int, term int, log GameLog) RaftLog {
 	var emptyCfgLog = ConfigurationLog{"", nil, 0, 0, nil}
 	return RaftLog{idx, term, Game, log, emptyCfgLog}

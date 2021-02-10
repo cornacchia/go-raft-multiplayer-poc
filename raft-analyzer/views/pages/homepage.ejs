@@ -6,7 +6,7 @@
     <form class="form-inline">
       <input type="string" class="form-control" id="raft-log-folder" placeholder="Insert the path of a folder containing Raft logs" style="width:40%;">
       <input type="string" class="form-control" id="db-collection" placeholder="Insert a db collection name for the collected logs" style="width:40%;">
-      <button id="loadAndAnalyzeLogs" type="button" class="btn btn-success" style="width:20%;">Load and analyze logs</button>
+      <button id="loadLogs" type="button" class="btn btn-success" style="width:20%;">Load new logs</button>
     </form>
     <span id="loadingMsg" hidden><i class="fas fa-spinner fa-spin"></i> Loading and indexing logs, this could take a while...</span>
     <span id="errorMsg" class="text-danger" hidden></span>
@@ -16,9 +16,23 @@
 
 <!-- COLLECTION SELECT ROW -->
 <div class="row">
-  <div class="col-6">
+  <div class="col-12">
     <h2>Select existing log collection</h2>
+  </div>
+</div>
+<div class="row">
+  <div class="col-6">
     <select id="collectionSelect" class="form-control"></select>
+  </div>
+  <div class="col-6">
+    <button id="analyzeLogs" type="button" class="btn btn-success" style="width:20%;" disabled>Run log analysis</button>
+    <span id="analyzeMsg" hidden><i class="fas fa-spinner fa-spin"></i></span>
+  </div>
+</div>
+
+<div class="row">
+  <div class="col-12">
+    <div id="currentAnalysis"></div>
   </div>
 </div>
 

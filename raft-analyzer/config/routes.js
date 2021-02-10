@@ -34,5 +34,6 @@ module.exports.routes = {
   'POST /loadLogs': { action: 'logs/load' },
   'GET /state': { action: 'state/get' },
   'POST /setCollection': { action: 'logs/set-collection' },
-  'POST /simulateLog': { action: 'logs/simulate-log' }
+  'POST /simulateLog': { action: 'logs/simulate-log' },
+  'POST /analyzeLogs': { action: 'logs/analyze' }
 };

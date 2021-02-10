@@ -30,7 +30,7 @@ async function getCollections() {
 }
 
 async function assignIndexesToLogs(collection) {
-  sails.log.debug(logHeader + 'Assign indexes to logs (this can take a while...)')
+  sails.log.info(logHeader + 'Assign indexes to logs (this can take a while...)')
   let idx = 0
   const jobQueue = async.queue((doc, callback) => {
     // code for your update
@@ -51,7 +51,7 @@ async function assignIndexesToLogs(collection) {
   
   jobQueue.drain(() => {
     loadingLogs = false
-    sails.log.debug(logHeader + 'Done')
+    sails.log.info(logHeader + 'Done')
     error = ""
   })
 }
@@ -86,7 +86,7 @@ function parseSendAppendEntriesRPC(line, obj) {
     const nodeId = sendAppendEntriesRPCMatch[1]
     const firstIdx = sendAppendEntriesRPCMatch[2]
     const lastIdx = sendAppendEntriesRPCMatch[3]
-    obj.saer = { i : nodeId, f: firstIdx, l: lastIdx }
+    obj.saer = { i : nodeId, f: parseInt(firstIdx), l: parseInt(lastIdx) }
   }
 }
 
@@ -121,7 +121,7 @@ function parseInstallSnapshotRPC(line, obj) {
   if (installSnapshotRPCMatch) {
     const nodeId = installSnapshotRPCMatch[1]
     const lastIncludedIdx = installSnapshotRPCMatch[2]
-    obj.isr = { i : nodeId, li: lastIncludedIdx }
+    obj.isr = { i : nodeId, li: parseInt(lastIncludedIdx) }
   }
 }
 
@@ -153,10 +153,7 @@ function parseBecomeLeader(line, obj) {
   if (becomeLeaderMatch) {
     const term = becomeLeaderMatch[1]
     const lastCommit = becomeLeaderMatch[2]
-    obj.bl = {
-      t: term,
-      lc: lastCommit
-    }
+    obj.bl = { t: parseInt(term), lc: parseInt(lastCommit) }
   }
 }
 
@@ -165,10 +162,7 @@ function parseApplyLog(line, obj) {
   if (applyLogMatch) {
     const idx = applyLogMatch[1]
     const log = applyLogMatch[2]
-    obj.al = {
-      i: idx,
-      l: log
-    }
+    obj.al = { i: parseInt(idx), l: log }
   }
 }
 

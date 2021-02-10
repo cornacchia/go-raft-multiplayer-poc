@@ -46,11 +46,6 @@ async function setCurrentCollection(newCollection) {
   }
 }
 
-function findNodePosition(id) {
-  const intId = parseInt(id)
-
-}
-
 async function addLogToState(idx) {
   sails.log.debug(logHeader + 'Add log to state: ' + idx)
   const log = await sails.getDatastore().manager.collection(currentCollection).findOne({ i: idx })

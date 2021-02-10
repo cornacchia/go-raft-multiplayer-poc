@@ -651,7 +651,7 @@ func handleLeader(opt *options) {
 }
 
 func applyLog(opt *options, raftLog RaftLog) {
-	log.Info("Raft apply log: ", raftLog.Idx, " ", raftLog)
+	log.Info("Raft apply log: ", raftLog.Idx, " ", raftLogToString(raftLog))
 	// TODO remove player from game if disconnected
 	if raftLog.Type == Game {
 		(*opt).actionChan <- raftLog.Log

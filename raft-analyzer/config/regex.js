@@ -14,7 +14,7 @@ module.exports.regex = {
   becomeFollower: /Become Follower/,
   becomeCandidate: /Become Candidate/,
   becomeLeader: /Become Leader: (\d+) (\d+)/, // current term, commit index
-  applyLog: /Raft apply log: (\d+) (.*)/, // log idx, raft log string representation
+  applyLog: /Raft apply log: (\d+) (.*)"/, // log idx, raft log string representation
   shuttingDown: /Shutting down/,
   actionTimeout: /Action timeout: (\d+)/ // timeout ms
 }
