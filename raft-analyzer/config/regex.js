@@ -12,10 +12,10 @@ module.exports.regex = {
   installSnapshotRPC: /Sending installSnapshotRPC: (\d+) (\d+)/, // node id, last included index
   respondInstallSnapshotRPC: /Respond to InstallSnapshotRPC: (\d+) (.*)"/, // node id, success
   becomeFollower: /Become Follower/,
-  becomeCandidate: /Become Candidate/,
+  becomeCandidate: /Become Candidate: (\d+)/, // candidacy term
   becomeLeader: /Become Leader: (\d+)/, // current term
   applyLog: /Raft apply log: (\d+) (.*)"/, // log idx, raft log string representation
-  shuttingDown: /Shutting down/,
-  actionTimeout: /Action timeout: (\d+)/, // timeout ms
+  shuttingDown: /Main - Shutdown complete/,
+  actionTimeout: /Main - Action time: (\d+)/, // timeout ms
   addLog: /State - add raft log: (\d+)/, // idx
 }

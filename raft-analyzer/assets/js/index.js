@@ -73,7 +73,7 @@ function getLogHtml(log) {
     else htmlString += '<i class="fas fa-times"></i>'
   }
   if (log.bf) htmlString += 'Become Follower'
-  if (log.bc) htmlString += 'Become Candidate'
+  if (log.bc) htmlString += 'Become Candidate (term: ' + log.bc.t + ')'
   if (log.bl) htmlString += 'Become Leader (term: ' + log.bl.t + ')'
   if (log.al) htmlString += 'Apply log: ' + log.al.i
   if (log.sd) htmlString += 'Shutting down'

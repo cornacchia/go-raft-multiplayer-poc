@@ -146,7 +146,8 @@ function parseBecomeFollower(line, obj) {
 function parseBecomeCandidate(line, obj) {
   const becomeCandidateMatch = sails.config.regex.becomeCandidate.exec(line)
   if (becomeCandidateMatch) {
-    obj.bc = true
+    const term = becomeCandidateMatch[1]
+    obj.bc = { t: parseInt(term) }
   }
 }
 
@@ -220,7 +221,7 @@ async function loadLogFile(file, collection, nodeId) {
 
   lines.forEach(line => {
     var newLog = parseLogLine(line, nodeId)
-    if (_.keys(newLog).length > 2) newLogs.push(newLog)
+    if (_.keys(newLog).length > 3) newLogs.push(newLog)
   })
 
   try {
