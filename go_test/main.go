@@ -15,46 +15,30 @@ import (
 )
 
 type execStats struct {
-	node      int
-	totValue  int64
-	nOfValues int64
-	dropped   int64
+	node            int
+	totValue        int64
+	nOfValues       int64
+	dropped         int64
+	startTs         *time.Time
+	endTs           *time.Time
+	durationSeconds float64
 }
 
 var openCmds = [1024]*exec.Cmd{}
-var numberOfCmds = 0
 
-func baseNode(pkgToTest string) {
-	cmd := exec.Command("./"+pkgToTest, "Test", "Node", "6666")
-	cmd.Dir = "../" + pkgToTest
-	// cmd.Stderr = os.Stderr
-	openCmds[0] = cmd
-	numberOfCmds = 1
-	cmd.Start()
-	//if err := cmd.Wait(); err != nil {
-	//	killAll()
-	//	log.Fatal(err)
-	//}
-	cmd.Wait()
-}
-
-func newCommand(pkgToTest string, mode string, port int, startLeaderPort int, idx int) {
+func newCommand(pkgToTest string, mode string, ports []string, idx int) {
 	var cmd *exec.Cmd
-	if startLeaderPort >= 0 {
-		cmd = exec.Command("./"+pkgToTest, "Test", mode, fmt.Sprint(port), fmt.Sprint(startLeaderPort))
-	} else {
-		cmd = exec.Command("./"+pkgToTest, "Test", mode, fmt.Sprint(port))
-	}
+	var cmdString = "./" + pkgToTest
+	var args = []string{"Test", mode}
+	cmd = exec.Command(cmdString, append(args, ports...)...)
 	cmd.Dir = "../" + pkgToTest
-	// cmd.Stderr = os.Stderr
+	cmd.Stderr = os.Stderr
 	openCmds[idx] = cmd
-	numberOfCmds++
 	cmd.Start()
-	//if err := cmd.Wait(); err != nil {
-	//	killAll()
-	//	log.Fatal(err)
-	//}
-	cmd.Wait()
+	if err := cmd.Wait(); err != nil {
+		fmt.Println("Error starting command ", cmd.Path, " ", cmd.Args)
+		fmt.Println(err)
+	}
 }
 
 func killProcess(i int, signal syscall.Signal) {
@@ -64,20 +48,25 @@ func killProcess(i int, signal syscall.Signal) {
 	}
 }
 
-func killAll() {
-	fmt.Println("Killall: ", numberOfCmds)
-	for idx := 0; idx < numberOfCmds; idx++ {
-		killProcess(idx, syscall.SIGTERM)
-	}
+func killAll(pkgToTest string) {
+	cmd := exec.Command("killall", "-SIGTERM", pkgToTest)
+	log.Printf("Killing all workers")
+	err := cmd.Run()
+	log.Printf("Killing finished with error: %v", err)
 }
 
-func analyzeNodeBehavior(node int) {
+func analyzeNodeBehavior(node int) execStats {
 	fmt.Printf("###################### %d #####################\n", node)
+	const timestampLayout = "2006-01-02 15:04:05.000000"
 	var lastRaftLogReceived = -1
 	var lastTurn = -1
 	var newTurnRegex = regexp.MustCompile("New turn: ([0-9]+)")
 	var raftLogIdxRegex = regexp.MustCompile("Raft apply log: ([0-9]+)")
 	var stateSnapshotIdxRegex = regexp.MustCompile("State: install snapshot ([0-9]+)")
+	var regTs = regexp.MustCompile("Main - Action time: ([0-9]+)")
+	var regDropped = regexp.MustCompile("Main - Action dropped - ")
+	var regTimestamp = regexp.MustCompile("time=\"(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}.\\d{3}\\d{3})\"")
+	var stats = execStats{node, 0, 0, 0, nil, nil, -1}
 
 	file, _ := os.Open("/tmp/go_raft_log_" + fmt.Sprint(node))
 	fileScanner := bufio.NewScanner(file)
@@ -94,6 +83,18 @@ func analyzeNodeBehavior(node int) {
 		var matchLogIdx = raftLogIdxRegex.FindStringSubmatch(line)
 		var matchSnapshotIdx = stateSnapshotIdxRegex.FindStringSubmatch(line)
 		var matchNewTurn = newTurnRegex.FindStringSubmatch(line)
+		var matchTs = regTs.FindStringSubmatch(line)
+		var matchDropped = regDropped.FindStringSubmatch(line)
+		var matchTimestamp = regTimestamp.FindStringSubmatch(line)
+
+		if matchTimestamp != nil {
+			var timeString = matchTimestamp[1]
+			var time, _ = time.Parse(timestampLayout, timeString)
+			if stats.startTs == nil {
+				stats.startTs = &time
+			}
+			stats.endTs = &time
+		}
 		if matchLogIdx != nil {
 			var newRaftLogReceived, _ = strconv.Atoi(matchLogIdx[1])
 			if lastRaftLogReceived >= 0 && newRaftLogReceived != lastRaftLogReceived+1 {
@@ -110,51 +111,21 @@ func analyzeNodeBehavior(node int) {
 			var newTurn, _ = strconv.Atoi(matchNewTurn[1])
 			lastTurn = newTurn
 		}
+		if matchTs != nil {
+			stats.nOfValues++
+			var intVal, _ = strconv.Atoi(matchTs[1])
+			stats.totValue += int64(intVal)
+		}
+		if matchDropped != nil {
+			stats.dropped++
+		}
 	}
 	if lastTurn >= 0 {
 		fmt.Printf("Node %d: last turn %d\n", node, lastTurn)
 	}
 	fmt.Printf("Node %d: last received raft log %d\n", node, lastRaftLogReceived)
-}
-
-func readResults(node int) execStats {
-	var regTs = regexp.MustCompile("[0-9]+")
-	var regDropped = regexp.MustCompile("Action dropped")
-	var stats = execStats{node, 0, 0, 0}
-	file, _ := os.Open("/tmp/go_raft_" + fmt.Sprint(node))
-	fileScanner := bufio.NewScanner(file)
-	fileScanner.Split(bufio.ScanLines)
-	var fileTextLines []string
-
-	for fileScanner.Scan() {
-		fileTextLines = append(fileTextLines, fileScanner.Text())
-	}
-
-	file.Close()
-
-	for _, eachline := range fileTextLines {
-		matchTs := regTs.FindString(eachline)
-		matchDropped := regDropped.FindString(eachline)
-		if matchTs != "" {
-			stats.nOfValues++
-			var intVal, _ = strconv.Atoi(matchTs)
-			stats.totValue += int64(intVal)
-		}
-		if matchDropped != "" {
-			stats.dropped++
-		}
-	}
+	stats.durationSeconds = (*stats.endTs).Sub((*stats.startTs)).Seconds()
 	return stats
-}
-
-func removeAllLogFiles() {
-	files, err := filepath.Glob("/tmp/go_raft_*")
-	if err != nil {
-		panic(err)
-	}
-	for _, f := range files {
-		os.Remove(f)
-	}
 }
 
 func appendResultsToFile(filename string, text string) {
@@ -174,15 +145,16 @@ func elaborateResults(start int, clientStart int, stop int, pkgToTest string, te
 	var totalActionDelayMs float64 = 0
 	var totalActionSent int64 = 0
 	var totalDropped int64 = 0
+	var totalActionsPerSecond = 0.0
 	var nOfEntries int = 0
 	var notStarted int = 0
 	for i := start; i < stop; i++ {
-		analyzeNodeBehavior(6666 + i)
+		result := analyzeNodeBehavior(6666 + i)
 		if i >= clientStart {
-			result := readResults(6666 + i)
-			// fmt.Println(result)
 			if result.nOfValues > 0 {
 				var localMean = float64(result.totValue) / float64(result.nOfValues)
+				var localActionsPerSecond = float64(result.nOfValues) / result.durationSeconds
+				totalActionsPerSecond += localActionsPerSecond
 				totalDropped += result.dropped
 				totalActionSent += result.nOfValues
 				totalActionDelayMs += localMean
@@ -195,12 +167,12 @@ func elaborateResults(start int, clientStart int, stop int, pkgToTest string, te
 	if notStarted > 0 {
 		fmt.Println("!!! Some nodes did not start: ", notStarted)
 	}
-	var resultAtionDelayMs = totalActionDelayMs / float64(nOfEntries)
+	var resultActionDelayMs = totalActionDelayMs / float64(nOfEntries)
 	var resultDropped = float64(totalDropped) / float64(nOfEntries)
 	var resultActionSent = float64(totalActionSent) / float64(nOfEntries)
-	var actionsPerSecond = float64(resultActionSent) / float64(testTime)
-	fmt.Println(fmt.Sprintf("Mean for %d nodes => actions: %.3f, actions per second: %.3f, delay: %.3f, dropped: %.3f", stop, resultActionSent, actionsPerSecond, resultAtionDelayMs, resultDropped))
-	appendResultsToFile("./results/"+pkgToTest+"_"+testMode, fmt.Sprintf("%d %.3f %.3f %.3f %.3f", stop, resultActionSent, actionsPerSecond, resultAtionDelayMs, resultDropped))
+	var actionsPerSecond = totalActionsPerSecond / float64(nOfEntries)
+	fmt.Println(fmt.Sprintf("Mean for %d nodes => actions: %.3f, actions per second: %.3f, delay: %.3f, dropped: %.3f", stop, resultActionSent, actionsPerSecond, resultActionDelayMs, resultDropped))
+	appendResultsToFile("./results/"+pkgToTest+"_"+testMode, fmt.Sprintf("%d %.3f %.3f %.3f %.3f", stop, resultActionSent, actionsPerSecond, resultActionDelayMs, resultDropped))
 }
 
 func waitSomeTime(duration time.Duration, retChans []chan bool) {
@@ -210,33 +182,47 @@ func waitSomeTime(duration time.Duration, retChans []chan bool) {
 	}
 }
 
-func testNodes(testMode string, pkgToTest string, number int, testTime int, retChan chan bool) {
+func removeAllLogFiles() {
+	files, err := filepath.Glob("/tmp/go_raft_*")
+	if err != nil {
+		panic(err)
+	}
+	for _, f := range files {
+		os.Remove(f)
+	}
+}
+
+func testNodesNormal(testMode string, pkgToTest string, number int, testTime int, retChan chan bool) {
 	removeAllLogFiles()
 	fmt.Println("###################################")
 	fmt.Println("##### Normal test for ", number, " nodes")
-	// Start base nodes
-	go baseNode(pkgToTest)
-	time.Sleep(time.Millisecond * 1000)
-	go newCommand(pkgToTest, "Node", 6667, 6666, 1)
-	time.Sleep(time.Millisecond * 1000)
-	go newCommand(pkgToTest, "Node", 6668, 6666, 2)
-	time.Sleep(time.Millisecond * 1000)
-	go newCommand(pkgToTest, "Node", 6669, 6666, 3)
-	time.Sleep(time.Millisecond * 1000)
-	go newCommand(pkgToTest, "Node", 6670, 6666, 4)
-	time.Sleep(time.Millisecond * 1000)
+
+	var nodesToTest = map[int][]string{
+		1: {"6667", "6666"},
+		2: {"6668", "6666"},
+		3: {"6669", "6666"},
+		4: {"6670", "6666"},
+	}
 
 	for i := 5; i < number; i++ {
-		go newCommand(pkgToTest, "Bot", 6666+i, 6666+(i%5), i)
+		// nodesToTest[i] = []string{fmt.Sprint(6666 + i), fmt.Sprint(6666 + (i % 5))}
+		nodesToTest[i] = []string{fmt.Sprint(6666 + i), "6666"}
+	}
+
+	go newCommand(pkgToTest, "Bot", []string{"6666"}, 0)
+	time.Sleep(time.Millisecond * 1000)
+	for i, nodes := range nodesToTest {
+		go newCommand(pkgToTest, "Bot", nodes, i)
 		time.Sleep(time.Millisecond * 1000)
 	}
 
 	waitRetChan := make(chan bool)
 	go waitSomeTime(time.Duration(testTime), []chan bool{waitRetChan})
 	<-waitRetChan
-	killAll()
 
-	elaborateResults(0, 5, number, pkgToTest, testTime, testMode)
+	killAll(pkgToTest)
+
+	elaborateResults(0, 0, number, pkgToTest, testTime, testMode)
 
 	retChan <- true
 }
@@ -244,29 +230,32 @@ func testNodes(testMode string, pkgToTest string, number int, testTime int, retC
 func testNormal(testMode string, start int, stop int, step int, testTime int, pkgToTest string) {
 	for i := start; i <= stop; i += step {
 		retChan := make(chan bool)
-		go testNodes(testMode, pkgToTest, i, testTime, retChan)
+		go testNodesNormal(testMode, pkgToTest, i, testTime, retChan)
 		<-retChan
 		time.Sleep(time.Second * 10)
 	}
 }
 
-func killWorkers(pkgToTest string, signal syscall.Signal, retChan chan bool, nodesToTest map[int][2]int) {
+func killWorkers(pkgToTest string, signal syscall.Signal, killInterval int, retChan chan bool, nodesToTest map[int][]string) {
 	var currentWorkerIdx = 0
+	fmt.Print("Killing nodes: ")
 	for {
 		select {
 		case <-retChan:
+			fmt.Println("Stop killing nodes")
 			return
-		case <-time.After(time.Second * 20):
+		case <-time.After(time.Second * time.Duration(killInterval)):
+			fmt.Print(currentWorkerIdx, ", ")
 			killProcess(currentWorkerIdx, signal)
-			time.Sleep(time.Second * 5)
+			time.Sleep(time.Second * 10)
 			var val, _ = nodesToTest[currentWorkerIdx]
-			go newCommand(pkgToTest, "Bot", val[0], val[1], currentWorkerIdx)
+			go newCommand(pkgToTest, "Bot", val, currentWorkerIdx)
 			currentWorkerIdx = (currentWorkerIdx + 1) % len(nodesToTest)
 		}
 	}
 }
 
-func testDynamic(testMode string, testTime int, pkgToTest string, signal syscall.Signal) {
+func testNodesDynamic(testMode string, killInterval int, testTime int, pkgToTest string, retChan chan bool, signal syscall.Signal) {
 	removeAllLogFiles()
 	fmt.Println("###################################")
 	fmt.Print("##### Dynamic test for nodes: ")
@@ -276,37 +265,46 @@ func testDynamic(testMode string, testTime int, pkgToTest string, signal syscall
 		fmt.Println("SIGKILL")
 	}
 
-	var nodesToTest = map[int][2]int{
-		1: {6667, 6666},
-		2: {6668, 6666},
-		3: {6669, 6666},
-		4: {6670, 6666},
+	var nodesToTest = map[int][]string{
+		1: {"6667", "6666", "6668"},
+		2: {"6668", "6666", "6669"},
+		3: {"6669", "6666", "6670"},
+		4: {"6670", "6666", "6667"},
 	}
 
-	go newCommand(pkgToTest, "Bot", 6666, -1, 0)
-	time.Sleep(time.Millisecond * 200)
+	go newCommand(pkgToTest, "Bot", []string{"6666"}, 0)
+	time.Sleep(time.Millisecond * 1000)
 	for i, nodes := range nodesToTest {
-		go newCommand(pkgToTest, "Bot", nodes[0], nodes[1], i)
-		time.Sleep(time.Millisecond * 200)
+		go newCommand(pkgToTest, "Bot", nodes, i)
+		time.Sleep(time.Millisecond * 1000)
 	}
-	nodesToTest[0] = [2]int{6666, 6667}
+	nodesToTest[0] = []string{"6666", "6667", "6668"}
 
 	waitRetChan := make(chan bool)
 	stopKillingWorkersChan := make(chan bool)
 	go waitSomeTime(time.Duration(testTime), []chan bool{stopKillingWorkersChan, waitRetChan})
-	go killWorkers(pkgToTest, signal, stopKillingWorkersChan, nodesToTest)
+	go killWorkers(pkgToTest, signal, killInterval, stopKillingWorkersChan, nodesToTest)
 	<-waitRetChan
 
-	time.Sleep(time.Second * time.Duration(testTime))
-	killAll()
+	killAll(pkgToTest)
 
 	elaborateResults(0, 0, len(nodesToTest), pkgToTest, testTime, testMode)
+	retChan <- true
 }
 
-func handlePrematureTermination(termChan chan os.Signal, completeChan chan bool) {
+func testDynamic(testMode string, start int, stop int, step int, testTime int, pkgToTest string, signal syscall.Signal) {
+	for i := start; i <= stop; i += step {
+		retChan := make(chan bool)
+		go testNodesDynamic(testMode, i, testTime, pkgToTest, retChan, signal)
+		<-retChan
+		time.Sleep(time.Second * 10)
+	}
+}
+
+func handlePrematureTermination(pkgToTest string, termChan chan os.Signal, completeChan chan bool) {
 	select {
 	case <-termChan:
-		killAll()
+		killAll(pkgToTest)
 		os.Exit(0)
 	case <-completeChan:
 	}
@@ -324,8 +322,8 @@ func estimateTimeOfExecution(start int, stop int, step int, testTime int) float6
 
 func main() {
 	args := os.Args
-	if len(args) < 4 {
-		log.Fatal("Usage: go_test <dynamic | faulty | normal> <go_skeletons | go_wanderer> <time> [<start> <finish> <step>]")
+	if len(args) < 7 {
+		log.Fatal("Usage: go_test <dynamic | faulty | normal> <go_skeletons | go_wanderer> <time> <start> <finish> <step>")
 	}
 	var testMode = args[1]
 	var pkgToTest = args[2]
@@ -334,14 +332,12 @@ func main() {
 	var start = -1
 	var stop = -1
 	var step = -1
-	if len(args) > 4 {
-		var startStr = args[4]
-		var stopStr = args[5]
-		var stepStr = args[6]
-		start, _ = strconv.Atoi(startStr)
-		stop, _ = strconv.Atoi(stopStr)
-		step, _ = strconv.Atoi(stepStr)
-	}
+	var startStr = args[4]
+	var stopStr = args[5]
+	var stepStr = args[6]
+	start, _ = strconv.Atoi(startStr)
+	stop, _ = strconv.Atoi(stopStr)
+	step, _ = strconv.Atoi(stepStr)
 
 	if testMode == "normal" {
 		var estTimeOfExecution = estimateTimeOfExecution(start, stop, step, testTime)
@@ -354,14 +350,14 @@ func main() {
 	termChan := make(chan os.Signal)
 	signal.Notify(termChan, syscall.SIGTERM, syscall.SIGINT)
 
-	go handlePrematureTermination(termChan, completeChan)
+	go handlePrematureTermination(pkgToTest, termChan, completeChan)
 
 	if testMode == "normal" {
 		testNormal(testMode, start, stop, step, testTime, pkgToTest)
 	} else if testMode == "dynamic" {
-		testDynamic(testMode, testTime, pkgToTest, syscall.SIGTERM)
+		testDynamic(testMode, start, stop, step, testTime, pkgToTest, syscall.SIGTERM)
 	} else if testMode == "faulty" {
-		testDynamic(testMode, testTime, pkgToTest, syscall.SIGKILL)
+		testDynamic(testMode, start, stop, step, testTime, pkgToTest, syscall.SIGKILL)
 	}
 
 	completeChan <- true
