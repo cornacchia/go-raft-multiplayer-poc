@@ -136,7 +136,6 @@ func stateToString(state *GameState) string {
 func applyAction(state *GameState, playerID PlayerID, action ActionImpl, opt *engineOptions) {
 	playerData := (*state).Players[playerID]
 	var position = playerData.Pos
-	fmt.Println("Apply log: ", playerID, " - ", action.Turn, " ", action)
 	switch action.Action {
 	case UP:
 		// Move UP
@@ -175,9 +174,7 @@ func applyAction(state *GameState, playerID PlayerID, action ActionImpl, opt *en
 		var newPosition = generateDeterministicPlayerStartingPosition(playerID, state)
 		(*state).Players[playerID] = PlayerState{newPosition, action.Turn}
 	}
-	fmt.Println(stateToString(state))
 	changed := checkIfTurnChanged(opt, state)
-	fmt.Println(changed, (*state).CurrentTurn)
 	if changed {
 		(*state).CurrentTurn++
 	}

@@ -115,7 +115,7 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, changeC
 			var now = getNowMs()
 			log.Info("Main - Action time: ", (now - timestamp))
 		}
-		if (*opt).nodeMode == "Client" {
+		if (*opt).nodeMode == "Client" || (*opt).nodeMode == "Bot" {
 			(*opt).uiStateChan <- (*response).State
 		}
 	case <-time.After(time.Millisecond * waitTime):
