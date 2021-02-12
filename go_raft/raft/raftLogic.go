@@ -146,7 +146,7 @@ func ConnectToRaftServer(opt *options, serverPort ServerID, result chan *RaftCon
 	} else {
 		if opt != nil {
 			(*opt)._state.addNewServer(serverPort)
-			log.Trace("Raft - Connected to node: " + string(serverPort))
+			log.Info("Raft - Connected to node: " + string(serverPort))
 		} else {
 			log.Trace("Main - Connected to node: " + string(serverPort))
 		}

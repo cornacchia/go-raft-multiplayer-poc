@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"go_raft/raft"
 	"go_wanderer/engine"
 	"go_wanderer/ui"
@@ -17,18 +16,17 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const actionCallTimeout = 300
-
 type options struct {
-	actionChan            chan engine.GameLog
-	connections           *sync.Map
-	otherServers          []raft.ServerID
-	id                    raft.ServerID
-	connectedChan         chan bool
-	disconnectedChan      chan bool
-	outputFile            *os.File
-	mode                  string
-	requestConnectionChan chan raft.RequestConnection
+	actionChan             chan engine.GameLog
+	connections            *sync.Map
+	otherServers           []raft.ServerID
+	id                     raft.ServerID
+	connectedChan          chan bool
+	disconnectedChan       chan bool
+	mode                   string
+	requestConnectionChan  chan raft.RequestConnection
+	requestNewServerIDChan chan bool
+	getNewServerIDChan     chan raft.ServerID
 }
 
 func checkError(err error) {
@@ -41,22 +39,30 @@ func getNowMs() int64 {
 	return time.Now().UnixNano() / int64(time.Millisecond)
 }
 
-// Returns an arbitrary connection id from the map
-func getOneConnectionID(opt *options) raft.ServerID {
-	var returnID raft.ServerID = ""
-	(*(*opt).connections).Range(func(id interface{}, connection interface{}) bool {
-		if len((*opt).otherServers) > 0 {
-			if id.(raft.ServerID) != (*opt).id {
-				returnID = id.(raft.ServerID)
-				return false
-			}
-			return true
+func addToKnownServers(opt *options, id raft.ServerID) {
+	var shouldAdd = true
+	for _, val := range (*opt).otherServers {
+		if val == id {
+			shouldAdd = false
+			break
 		}
-		returnID = id.(raft.ServerID)
-		return false
-	})
+	}
+	if shouldAdd {
+		(*opt).otherServers = append((*opt).otherServers, id)
+	}
+}
 
-	return returnID
+func connectionPool(opt *options) {
+	var currentServer = -1
+	for {
+		<-(*opt).requestNewServerIDChan
+		if len((*opt).otherServers) > 0 {
+			currentServer = (currentServer + 1) % len((*opt).otherServers)
+			(*opt).getNewServerIDChan <- (*opt).otherServers[currentServer]
+		} else {
+			(*opt).getNewServerIDChan <- (*opt).id
+		}
+	}
 }
 
 func handleCurrentTurn(currentTurnEngineChan chan int, currentTurnUIChan chan int) {
@@ -74,17 +80,29 @@ func handleCurrentTurn(currentTurnEngineChan chan int, currentTurnUIChan chan in
 	}
 }
 
-func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConnectionChan chan raft.ServerID, msg engine.GameLog, timestamp int64, opt *options) {
+func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, changeConnectionChan chan raft.ServerID, msg engine.GameLog, timestamp int64, currentConnection raft.ServerID, opt *options) {
+	var waitTime time.Duration = 1000
+	if msg.Action.Action == engine.CONNECT {
+		waitTime = 5000
+	}
+	if call == nil {
+		time.Sleep(time.Millisecond * 300)
+		(*opt).actionChan <- msg
+		return
+	}
+
 	select {
 	case <-call.Done:
 		if !(*response).Applied {
+			log.Trace("Main - Action not applied ", currentConnection, " - ", (*response))
 			if (*response).LeaderID != "" {
-				newConnectionChan <- (*response).LeaderID
+				addToKnownServers(opt, (*response).LeaderID)
+				changeConnectionChan <- (*response).LeaderID
 			} else {
-				newConnectionChan <- (*opt).id
+				(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, [2]bool{false, true}, (*opt).connections}
+				changeConnectionChan <- (*opt).id
 			}
-			time.Sleep(time.Millisecond * 500)
-			// TODO se non risponde entro un tot cambia leader ID
+			time.Sleep(time.Millisecond * 300)
 			// Send again
 			(*opt).actionChan <- msg
 		} else if msg.Action.Action == engine.CONNECT {
@@ -93,26 +111,23 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, newConn
 			(*opt).disconnectedChan <- true
 		} else if (*opt).mode == "Test" {
 			var now = getNowMs()
-			log.Info("Action timeout: ", (now - timestamp))
-			(*opt).outputFile.Write([]byte(fmt.Sprintf("%v\n", (now - timestamp))))
+			log.Info("Main - Action time: ", (now - timestamp))
 		}
-	case <-time.After(time.Millisecond * actionCallTimeout):
+	case <-time.After(time.Millisecond * waitTime):
 		if msg.Action.Action == engine.CONNECT {
-			log.Trace("Timeout connecting to raft network")
-			(*opt).actionChan <- msg
+			log.Debug("Main - Timeout connecting to raft network - ", currentConnection, " - ", msg)
 		} else if msg.Action.Action != engine.DISCONNECT && (*opt).mode == "Test" {
-			(*opt).outputFile.Write([]byte("Action dropped"))
+			log.Info("Main - Action dropped - ", currentConnection, " - ", msg)
 		}
-		// Send again
-		newConnectionChan <- (*opt).id
-		// TODO proviamo a non rimandare per vedere se evita memory leak
+		changeConnectionChan <- ""
 		(*opt).actionChan <- msg
 	}
 }
 
 func manageActions(opt *options) {
-	var currentConnection = getOneConnectionID(opt)
-	newConnectionID := make(chan raft.ServerID)
+	(*opt).requestNewServerIDChan <- true
+	currentConnection := <-(*opt).getNewServerIDChan
+	changeConnectionChan := make(chan raft.ServerID)
 	for {
 		select {
 		case msg := <-(*opt).actionChan:
@@ -122,14 +137,23 @@ func manageActions(opt *options) {
 			var actionArgs = raft.ActionArgs{string(msg.Id), msg.ActionId, msg.Type, jsonAction}
 			var conn, found = (*(*opt).connections).Load(currentConnection)
 			if !found {
-				currentConnection = (*opt).id
+				(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, [2]bool{false, true}, (*opt).connections}
+				go handleActionResponse(nil, nil, changeConnectionChan, msg, timestamp, currentConnection, opt)
+				(*opt).requestNewServerIDChan <- true
+				currentConnection = <-(*opt).getNewServerIDChan
 			} else {
 				var raftConn = conn.(raft.RaftConnection)
 				actionCall := raftConn.Connection.Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
-				go handleActionResponse(actionCall, &actionResponse, newConnectionID, msg, timestamp, opt)
+				go handleActionResponse(actionCall, &actionResponse, changeConnectionChan, msg, timestamp, currentConnection, opt)
 			}
-		case newLeaderID := <-newConnectionID:
-			currentConnection = newLeaderID
+		case newServerID := <-changeConnectionChan:
+			if newServerID == "" {
+				(*opt).requestNewServerIDChan <- true
+				currentConnection = <-(*opt).getNewServerIDChan
+			} else {
+				currentConnection = newServerID
+			}
+
 			var _, found = (*(*opt).connections).Load(currentConnection)
 			if !found {
 				(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, [2]bool{false, true}, (*opt).connections}
@@ -141,7 +165,7 @@ func manageActions(opt *options) {
 func handlePrematureTermination(termChan chan os.Signal, connectedChan chan bool) {
 	select {
 	case <-termChan:
-		log.Info("Shutting down before full connection...")
+		log.Info("Main - Shutting down before full connection...")
 		os.Exit(0)
 	case <-connectedChan:
 	}
@@ -169,12 +193,9 @@ func main() {
 	nodeMode := args[2]
 	port := args[3]
 
-	var outputFile *os.File
 	var logOutputFile *os.File
 
 	if mode == "Test" {
-		outputFile, _ = os.OpenFile("/tmp/go_raft_"+port, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-
 		logOutputFile, _ = os.OpenFile("/tmp/go_raft_log_"+port, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 
 		log.SetOutput(logOutputFile)
@@ -204,6 +225,8 @@ func main() {
 	var currentTurnEngineChan = make(chan int)
 	var currentTurnUIChan = make(chan int)
 	var requestConnectionChan = make(chan raft.RequestConnection)
+	var requestNewServerIDChan = make(chan bool)
+	var getNewServerIDChan = make(chan raft.ServerID)
 
 	stateReqChan, stateChan, actionChan = engine.Start(playerID, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan, currentTurnEngineChan)
 
@@ -217,9 +240,11 @@ func main() {
 		serverID,
 		mainConnectedChan,
 		mainDisconnectedChan,
-		outputFile,
 		mode,
-		requestConnectionChan}
+		requestConnectionChan,
+		requestNewServerIDChan,
+		getNewServerIDChan}
+	go connectionPool(&opt)
 	go raft.ConnectionManager(nil, requestConnectionChan)
 	go manageActions(&opt)
 	go handleCurrentTurn(currentTurnEngineChan, currentTurnUIChan)
@@ -244,6 +269,8 @@ func main() {
 	uiActionChan <- engine.GameLog{playerID, ui.GetActionID(), "Disconnect", engine.ActionImpl{engine.DISCONNECT, 0}}
 	select {
 	case <-mainDisconnectedChan:
+		log.Info("Shutdown complete (clean)")
 	case <-time.After(time.Millisecond * 5000):
+		log.Info("Shutdown complete (timeout)")
 	}
 }
