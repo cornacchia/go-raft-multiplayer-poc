@@ -25,9 +25,10 @@ let currentAnalysis = {
     stateMachineSafety: [],
     leaderCompleteness: []
   },
-  appliedLogs: {}
+  appliedLogs: {},
+  mainEvents: []
 }
-const fieldsToSendToClient = ['lastLeaderTerm', 'lastCommittedLog', 'violations']
+const fieldsToSendToClient = ['lastLeaderTerm', 'lastCommittedLog', 'violations', 'mainEvents']
 
 function resetAnalysis() {
   currentAnalysis = {
@@ -39,7 +40,8 @@ function resetAnalysis() {
       leaderCompleteness: []
     },
     addedLogs: {},
-    appliedLogs: {}
+    appliedLogs: {},
+    mainEvents: []
   }
 }
 
@@ -69,7 +71,14 @@ async function runAnalysis() {
     const log = await sails.getDatastore().manager.collection(currentCollection).findOne({ i: idx })
     if (!log) finish = true
     else {
+      if (log.lu) currentAnalysis.mainEvents.push(log)
+
+      if (log.bc) currentAnalysis.mainEvents.push(log)
+
+      if (log.sd) currentAnalysis.mainEvents.push(log)
+
       if (log.bl) {
+        currentAnalysis.mainEvents.push(log)
         // Election Safety check
         // The logs are accessed in order, we expect the new leader terms to be ordered as well
         if (log.bl.t === currentAnalysis.lastLeaderTerm) {
@@ -92,7 +101,7 @@ async function runAnalysis() {
           sails.log.debug(logHeader + 'Last committed log: ' + currentAnalysis.lastCommittedLog)
           currentAnalysis.violations.leaderCompleteness.push({
             lastCommittedLog: currentAnalysis.lastCommittedLog,
-            log: log
+            lastLeaderLog: currentAnalysis.addedLogs[log.n]
           })
         }
 

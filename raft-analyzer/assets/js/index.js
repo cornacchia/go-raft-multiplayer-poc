@@ -125,8 +125,72 @@ function renderState(state) {
   if (_.isNil(playInterval)) $('.logCmd.manual').prop('disabled', false)
 }
 
+function renderAnalysisGeneralInformation(analysis) {
+  let resultHtml = '<strong>General information</strong><br/>'
+  resultHtml += '<strong> Last committed log</strong>: ' + analysis.lastCommittedLog + '<br/>'
+  resultHtml += '<strong> Last leader term</strong>: ' + analysis.lastLeaderTerm
+  $('#generalInformation').html(resultHtml)
+}
+
+function renderElectionSafetyViolations(data) {
+  if (data.length === 0) return '<li><i class="fas fa-check"></i> No election safety violations</li>'
+  let result = ''
+  for (const datum of data) {
+    result += '<li> Election safety violation. Last leader term: ' + datum.lastLeaderTerm + '; New leader term: ' + datum.log.t + ';</li>'
+  }
+  return result
+}
+
+function renderStateMachineSafetyViolations(data) {
+  if (data.length === 0) return '<li><i class="fas fa-check"></i> No state machine safety violations</li>'
+  let result = ''
+  for (const datum of data) {
+    result += '<li> State machine safety violation. Older log: ' + datum.oldLog + '; Newer log: ' + datum.log + ';</li>'
+  }
+  return result
+}
+
+function renderLeaderCompletenessViolations(data) {
+  if (data.length === 0) return '<li><i class="fas fa-check"></i> No leader completeness violations</li>'
+  let result = ''
+  for (const datum of data) {
+    result += '<li> Leader completeness violation. Last committed log: ' + datum.lastCommittedLog + '; Last leader log: ' + datum.lastLeaderLog + ';</li>'
+  }
+  return result
+}
+
+function renderAnalysisResults(analysis) {
+  let resultHtml = '<strong>Analysis results</strong><br/>'
+  resultHtml += '<ul>'
+  resultHtml += renderElectionSafetyViolations(analysis.violations.electionSafety)
+  resultHtml += renderStateMachineSafetyViolations(analysis.violations.stateMachineSafety)
+  resultHtml += renderLeaderCompletenessViolations(analysis.violations.leaderCompleteness)
+  resultHtml += '</ul>'
+  $('#generalInformation').html(resultHtml)
+}
+
+function renderAnalysisMainEvents(analysis) {
+  let resultHtml = '<strong>Main Raft events</strong><br/>'
+  resultHtml += '<ul>'
+  for (const evt of analysis.mainEvents) {
+    resultHtml += '<li>'
+    resultHtml += '<strong>' + evt.n + '</strong> - '
+    resultHtml += getDateString(evt.t) + ' - '
+    if (evt.lu) resultHtml += 'Listener up'
+    if (evt.bc) resultHtml += 'Become Candidate (term: ' + evt.bc.t + ')'
+    if (evt.bl) resultHtml += 'Become Leader (term: ' + evt.bl.t + ')'
+    if (evt.sd) resultHtml += 'Shutting down'
+    resultHtml += ' - (' + evt.i + ')'
+    resultHtml += '</li>'
+  }
+  resultHtml += '</ul>'
+  $('#mainEvents').html(resultHtml)
+}
+
 function renderCurrentAnalysis(analysis) {
-  $('#currentAnalysis').text(JSON.stringify(analysis))
+  renderAnalysisGeneralInformation(analysis)
+  renderAnalysisResults(analysis)
+  renderAnalysisMainEvents(analysis)
 }
 
 function renderAnalyze(analyze) {
@@ -195,6 +259,9 @@ function updateCollection(res) {
   $('#currentIdx').val(clientState.currentIdx)
   renderState(res.state)
   $('#analyzeLogs').prop('disabled', false)
+  $('#generalInformation').html('')
+  $('#analysisResults').html('')
+  $('#mainEvents').html('')
 }
 
 function setNewCollection(evt) {

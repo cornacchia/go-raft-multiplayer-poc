@@ -28,7 +28,7 @@ function getCurrentCollectionCount() {
 }
 
 async function setCurrentCollection(newCollection) {
-  if (newCollection !== currentCollection) {
+  if (newCollection !== '') {
     currentCollection = newCollection
     currentLogIdx = 0
     currentState = {
