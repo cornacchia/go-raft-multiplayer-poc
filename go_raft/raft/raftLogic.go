@@ -115,10 +115,20 @@ func ConnectionManager(opt *options, requestConnectionChan chan RequestConnectio
 			if connecting, found := ungoingConnections[newConnReq.Id]; found {
 				// Check if we are already connecting to this server
 				if !connecting {
+					if opt != nil {
+						log.Trace("Raft - Connection manager, attempt connection to ", newConnReq.Id)
+					} else {
+						log.Trace("Main - Connection manager, attempt connection to ", newConnReq.Id)
+					}
 					ungoingConnections[newConnReq.Id] = true
 					go EnsureConnectionToServer(opt, newConnReq.Id, newConnReq.State, newConnReq.Destination, responseChan)
 				}
 			} else {
+				if opt != nil {
+					log.Trace("Raft - Connection manager, attempt connection to ", newConnReq.Id)
+				} else {
+					log.Trace("Main - Connection manager, attempt connection to ", newConnReq.Id)
+				}
 				ungoingConnections[newConnReq.Id] = true
 				go EnsureConnectionToServer(opt, newConnReq.Id, newConnReq.State, newConnReq.Destination, responseChan)
 			}
@@ -131,12 +141,12 @@ func ConnectionManager(opt *options, requestConnectionChan chan RequestConnectio
 func ConnectToRaftServer(opt *options, serverPort ServerID, result chan *RaftConnectionResponse) {
 	client, err := rpc.DialHTTP("tcp", "127.0.0.1:"+string(serverPort))
 	if err != nil {
-		log.Warning("Error connecting to node: " + string(serverPort))
+		log.Warning("Error connecting to node: "+string(serverPort), " ", err)
 		result <- &RaftConnectionResponse{serverPort, nil}
 	} else {
 		if opt != nil {
 			(*opt)._state.addNewServer(serverPort)
-			log.Info("Raft - Connected to node: " + string(serverPort))
+			log.Trace("Raft - Connected to node: " + string(serverPort))
 		} else {
 			log.Trace("Main - Connected to node: " + string(serverPort))
 		}
@@ -172,19 +182,32 @@ func ConnectToRaftServers(opt *options, myID ServerID, otherServers []ServerID) 
 	return &establishedConnections, num
 }
 
+func CloseConnection(id ServerID, relevantConnections *sync.Map) {
+	if conn, found := (*relevantConnections).LoadAndDelete(id); found {
+		var raftConn = conn.(RaftConnection)
+		if raftConn.Connection != nil {
+			raftConn.Connection.Close()
+		}
+	}
+}
+
 func EnsureConnectionToServer(opt *options, serverPort ServerID, connState [2]bool, relevantConnections *sync.Map, responseChan chan ServerID) {
 	if opt != nil {
-		log.Trace("Raft - Ensure connection to server: ", serverPort)
+		log.Debug("Raft - Ensure connection to server: ", serverPort)
 	} else {
-		log.Trace("Main - Ensure connection to server: ", serverPort)
+		log.Debug("Main - Ensure connection to server: ", serverPort)
 	}
 	localRespChan := make(chan *RaftConnectionResponse)
 	var connected = false
+	CloseConnection(serverPort, relevantConnections)
 	for !connected {
 		go ConnectToRaftServer(opt, serverPort, localRespChan)
 		resp := <-localRespChan
 		if (*resp).Connection == nil {
 			time.Sleep(time.Second * 1)
+			if opt != nil {
+				log.Trace("Raft - Ensure connection to server, try again: ", serverPort)
+			}
 		} else {
 			var newConnection = RaftConnection{(*resp).Connection, connState[0], connState[1]}
 			relevantConnections.Store((*resp).Id, newConnection)
@@ -219,8 +242,9 @@ func sendRequestVoteRPCs(opt *options, requestVoteArgs *RequestVoteArgs) {
 			select {
 			case <-requestVoteCall.Done:
 				if requestVoteResponse.Id == "" {
-					log.Trace("RequestVoteRPC: Removing unresponsive connection")
-					(*opt).connections.LoadAndDelete(id)
+					log.Debug("RequestVoteRPC: Removing unresponsive connection ", id, " ", requestVoteResponse)
+					// (*opt).connections.LoadAndDelete(id)
+					CloseConnection(id, (*opt).connections)
 					(*opt).requestConnectionChan <- RequestConnection{id, [2]bool{raftConn.Old, raftConn.New}, (*opt).connections}
 				} else {
 					(*opt).myRequestVoteResponseChan <- &requestVoteResponse
@@ -243,9 +267,7 @@ func checkConnectionsToRemove(opt *options, connMap map[ServerID][2]bool) {
 	(*(*opt).connections).Range(func(id interface{}, connection interface{}) bool {
 		if _, found := connMap[id.(ServerID)]; !found {
 			log.Trace("Disconnected:", id)
-			var conn = connection.(RaftConnection)
-			conn.Connection.Close()
-			(*(*opt).connections).LoadAndDelete(id)
+			CloseConnection(id.(ServerID), (*opt).connections)
 			(*opt)._state.removeServer(id.(ServerID))
 		}
 		return true
@@ -262,6 +284,7 @@ func checkConnectionsToAdd(opt *options, connMap map[ServerID][2]bool) {
 			conn.New = state[1]
 			(*(*opt).connections).Store(id, conn)
 		} else {
+			log.Debug("Check connections to add, request connection to ", id)
 			(*opt).requestConnectionChan <- RequestConnection{id, state, (*opt).connections}
 			(*opt)._state.updateServerConfiguration(id, [2]bool{state[0], state[1]})
 		}
@@ -295,6 +318,104 @@ func installSnapshot(opt *options, isa *InstallSnapshotArgs) {
 	(*opt).installSnapshotResponseChan <- installSnapshotResponse
 }
 
+func handleClientMessages(opt *options) {
+	for {
+		act := <-(*opt).msgChan
+		switch (*opt)._state.getState() {
+		case Follower:
+			act.ChanResponse <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
+		case Candidate:
+			act.ChanResponse <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
+		case Leader:
+			if act.Msg.Type == "Connect" {
+				log.Trace("Received request to connect ", act.Msg.Id)
+				// Connect to new node and add it to the unvotingConnections map
+				go func() {
+					// Check if this is a reconnection after a node failure
+					if _, found := (*opt).connections.LoadAndDelete(ServerID(act.Msg.Id)); found {
+						(*opt)._state.removeServer(ServerID(act.Msg.Id))
+					}
+					(*opt).requestConnectionChan <- RequestConnection{ServerID(act.Msg.Id), [2]bool{false, false}, (*opt).unvotingConnections}
+					(*opt)._state.updateServerConfiguration(ServerID(act.Msg.Id), [2]bool{false, false})
+					(*opt)._state.updateNewServerResponseChans(ServerID(act.Msg.Id), act.Msg.ChanApplied)
+				}()
+				go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
+			} else if act.Msg.Type == "Disconnect" {
+				log.Trace("Received request to disconnect")
+				connMap, oldCount, newCount := startConfigurationChange(opt, ServerID(act.Msg.Id), false)
+				var ok = (*opt)._state.addNewConfigurationLog(ConfigurationLog{ServerID(act.Msg.Id), connMap, oldCount, newCount, nil})
+				if ok {
+					(*opt)._state.updateNewServerResponseChans(ServerID(act.Msg.Id), act.Msg.ChanApplied)
+					sendAppendEntriesRPCs(opt)
+					go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
+				}
+			} else {
+				// Handle player game action (i.e. movement)
+				if act.Msg.ActionId > (*opt)._state.getServerLastActionApplied(ServerID(act.Msg.Id)) {
+					// In this case the action is new
+					var ok = (*opt)._state.addNewGameLog(act.Msg)
+					if ok {
+						sendAppendEntriesRPCs(opt)
+						go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
+					}
+				} else {
+					// The action has already been applied, respond immediately (cft. Raft paper section 8 p.13)
+					// Note: this only prevents actions to be applied twice, i.e. it will work with snapshots
+					// because the counter will be updated naturally when new messages arrive
+					go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
+					act.Msg.ChanApplied <- true
+				}
+			}
+		}
+	}
+}
+
+func handleAppendEntriesRPCResponses(opt *options) {
+	for {
+		appendEntriesResponse := <-(*opt).myAppendEntriesResponseChan
+		if (*opt)._state.getState() == Leader {
+			// log.Debug("Rec AppendEntriesResponse ", appendEntriesResponse)
+			var matchIndex, snapshot = (*opt)._state.handleAppendEntriesResponse(appendEntriesResponse)
+
+			// Check if unvoting member should be promoted to voting
+			var _, found = (*opt).unvotingConnections.Load((*appendEntriesResponse).Id)
+
+			if snapshot {
+				sendInstallSnapshotRPC(opt, found, (*appendEntriesResponse).Id)
+			}
+			if found && matchIndex >= (*opt)._state.getCommitIndex() {
+				(*opt)._state.updateServerConfiguration((*appendEntriesResponse).Id, [2]bool{false, true})
+				connMap, oldCount, newCount := startConfigurationChange(opt, (*appendEntriesResponse).Id, true)
+				var ok = (*opt)._state.addNewConfigurationLog(ConfigurationLog{(*appendEntriesResponse).Id, connMap, oldCount, newCount, nil})
+				if ok {
+					sendAppendEntriesRPCs(opt)
+				}
+			}
+		}
+	}
+}
+
+func handleInstallSnapshotResponses(opt *options) {
+	for {
+		installSnapshotResponse := <-(*opt).myInstallSnapshotResponseChan
+		if (*opt)._state.getState() == Leader {
+			var matchIndex = (*opt)._state.handleInstallSnapshotResponse(installSnapshotResponse)
+
+			// Check if unvoting member should be promoted to voting
+			var _, found = (*opt).unvotingConnections.Load((*installSnapshotResponse).Id)
+
+			if found && matchIndex >= (*opt)._state.getCommitIndex() {
+				(*opt)._state.updateServerConfiguration((*installSnapshotResponse).Id, [2]bool{false, true})
+				connMap, oldCount, newCount := startConfigurationChange(opt, (*installSnapshotResponse).Id, true)
+				var ok = (*opt)._state.addNewConfigurationLog(ConfigurationLog{(*installSnapshotResponse).Id, connMap, oldCount, newCount, nil})
+				if ok {
+					sendAppendEntriesRPCs(opt)
+				}
+			}
+		}
+	}
+}
+
 /*
  * A server remains in Follower state as long as it receives valid
  * RPCs from a Leader or Candidate.
@@ -302,9 +423,6 @@ func installSnapshot(opt *options, isa *InstallSnapshotArgs) {
 func handleFollower(opt *options) {
 	var electionTimeoutTimer = (*opt)._state.checkElectionTimeout()
 	select {
-	// Received message from client: respond with correct leader id
-	case act := <-(*opt).msgChan:
-		act.ChanResponse <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
 	// Receive an AppendEntriesRPC
 	case appEntrArgs := <-(*opt).appendEntriesArgsChan:
 		(*opt)._state.stopElectionTimeout()
@@ -324,8 +442,8 @@ func handleFollower(opt *options) {
 		(*opt).connected = true
 	case <-(*electionTimeoutTimer).C:
 		// Only start new elections if fully connected to the raft network
+		(*opt)._state.stopElectionTimeout()
 		if (*opt).mode == "Node" || (*opt).connected {
-			(*opt)._state.stopElectionTimeout()
 			(*opt)._state.startElection()
 			// Issue requestvoterpc in parallel to other servers
 			if countConnections(opt) > 1 {
@@ -337,8 +455,6 @@ func handleFollower(opt *options) {
 		}
 	// Do nothing, just flush the channel
 	case <-(*opt).myRequestVoteResponseChan:
-	case <-(*opt).myInstallSnapshotResponseChan:
-	case <-(*opt).myAppendEntriesResponseChan:
 	}
 }
 
@@ -380,9 +496,6 @@ func handleCandidate(opt *options) {
 		// Issue requestvoterpc in parallel to other servers
 		var requestVoteArgs = (*opt)._state.prepareRequestVoteRPC()
 		sendRequestVoteRPCs(opt, requestVoteArgs)
-	// Do nothing, just flush the channel
-	case <-(*opt).myInstallSnapshotResponseChan:
-	case <-(*opt).myAppendEntriesResponseChan:
 	}
 }
 
@@ -397,12 +510,12 @@ func appendEntriesRPCAction(opt *options, appendEntriesArgs *AppendEntriesArgs, 
 		select {
 		case <-appendEntriesCall.Done:
 			if appendEntriesResponse.Id == "" {
-				log.Trace("AppendEntriesRPC: Removing unresponsive connection")
+				log.Debug("AppendEntriesRPC: Removing unresponsive connection ", id, " - ", appendEntriesResponse)
 				if unvoting {
-					(*opt).unvotingConnections.LoadAndDelete(id)
+					CloseConnection(id, (*opt).unvotingConnections)
 					(*opt).requestConnectionChan <- RequestConnection{id, [2]bool{raftConn.Old, raftConn.New}, (*opt).unvotingConnections}
 				} else {
-					(*opt).connections.LoadAndDelete(id)
+					CloseConnection(id, (*opt).connections)
 					(*opt).requestConnectionChan <- RequestConnection{id, [2]bool{raftConn.Old, raftConn.New}, (*opt).connections}
 				}
 			} else {
@@ -462,12 +575,12 @@ func sendInstallSnapshotRPC(opt *options, unvoting bool, id ServerID) {
 			select {
 			case <-installSnapshotCall.Done:
 				if installSnapshotResponse.Id == "" {
-					log.Trace("InstallSnapshotRPC: Removing unresponsive connection")
+					log.Debug("InstallSnapshotRPC: Removing unresponsive connection ", id, " ", installSnapshotResponse)
 					if unvoting {
-						(*opt).unvotingConnections.LoadAndDelete(id)
+						CloseConnection(id, (*opt).unvotingConnections)
 						(*opt).requestConnectionChan <- RequestConnection{id, [2]bool{raftConn.Old, raftConn.New}, (*opt).unvotingConnections}
 					} else {
-						(*opt).connections.LoadAndDelete(id)
+						CloseConnection(id, (*opt).connections)
 						(*opt).requestConnectionChan <- RequestConnection{id, [2]bool{raftConn.Old, raftConn.New}, (*opt).connections}
 					}
 				} else {
@@ -552,90 +665,16 @@ func finishConfigurationChange(opt *options, add bool) (map[ServerID][2]bool, in
 func handleLeader(opt *options) {
 	const hearthbeatTimeout time.Duration = 20
 	select {
-	// Received message from client
-	case act := <-(*opt).msgChan:
-		if act.Msg.Type == "Connect" {
-			log.Trace("Received request to connect")
-			// Connect to new node and add it to the unvotingConnections map
-			go func() {
-				// Check if this is a reconnection after a node failure
-				if _, found := (*opt).connections.LoadAndDelete(ServerID(act.Msg.Id)); found {
-					(*opt)._state.removeServer(ServerID(act.Msg.Id))
-				}
-				(*opt).requestConnectionChan <- RequestConnection{ServerID(act.Msg.Id), [2]bool{false, false}, (*opt).unvotingConnections}
-				(*opt)._state.updateServerConfiguration(ServerID(act.Msg.Id), [2]bool{false, false})
-				(*opt)._state.updateNewServerResponseChans(ServerID(act.Msg.Id), act.Msg.ChanApplied)
-			}()
-			go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
-		} else if act.Msg.Type == "Disconnect" {
-			log.Trace("Received request to disconnect")
-			connMap, oldCount, newCount := startConfigurationChange(opt, ServerID(act.Msg.Id), false)
-			var ok = (*opt)._state.addNewConfigurationLog(ConfigurationLog{ServerID(act.Msg.Id), connMap, oldCount, newCount, nil})
-			if ok {
-				(*opt)._state.updateNewServerResponseChans(ServerID(act.Msg.Id), act.Msg.ChanApplied)
-				sendAppendEntriesRPCs(opt)
-				go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
-			}
-		} else {
-			// Handle player game action (i.e. movement)
-			if act.Msg.ActionId > (*opt)._state.getServerLastActionApplied(ServerID(act.Msg.Id)) {
-				// In this case the action is new
-				var ok = (*opt)._state.addNewGameLog(act.Msg)
-				if ok {
-					sendAppendEntriesRPCs(opt)
-					go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
-				}
-			} else {
-				// The action has already been applied, respond immediately (cft. Raft paper section 8 p.13)
-				// Note: this only prevents actions to be applied twice, i.e. it will work with snapshots
-				// because the counter will be updated naturally when new messages arrive
-				go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
-				act.Msg.ChanApplied <- true
-			}
-
-		}
-	// Handle responses to AppendEntries
-	case appendEntriesResponse := <-(*opt).myAppendEntriesResponseChan:
-		var matchIndex, snapshot = (*opt)._state.handleAppendEntriesResponse(appendEntriesResponse)
-
-		// Check if unvoting member should be promoted to voting
-		var _, found = (*opt).unvotingConnections.Load((*appendEntriesResponse).Id)
-
-		if snapshot {
-			sendInstallSnapshotRPC(opt, found, (*appendEntriesResponse).Id)
-		}
-		if found && matchIndex >= (*opt)._state.getCommitIndex() {
-			(*opt)._state.updateServerConfiguration((*appendEntriesResponse).Id, [2]bool{false, true})
-			connMap, oldCount, newCount := startConfigurationChange(opt, (*appendEntriesResponse).Id, true)
-			var ok = (*opt)._state.addNewConfigurationLog(ConfigurationLog{(*appendEntriesResponse).Id, connMap, oldCount, newCount, nil})
-			if ok {
-				sendAppendEntriesRPCs(opt)
-			}
+	// Receive an AppendEntriesRPC
+	case appEntrArgs := <-(*opt).appendEntriesArgsChan:
+		var response = (*opt)._state.handleAppendEntries(appEntrArgs)
+		(*opt).appendEntriesResponseChan <- response
+		if (*response).Success {
+			checkNewConfigurations(opt, appEntrArgs)
 		}
 	// Receive a RequestVoteRPC
 	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
 		(*opt).requestVoteResponseChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
-		// Receive a InstallSnapshotRPC
-	case installSnapshotArgs := <-(*opt).installSnapshotArgsChan:
-		installSnapshot(opt, installSnapshotArgs)
-	// Receive an AppendEntriesRPC
-	case appEntrArgs := <-(*opt).appendEntriesArgsChan:
-		(*opt)._state.handleAppendEntries(appEntrArgs)
-	// Receive a response to a issued InstallSnapshotRPC
-	case installSnapshotResponse := <-(*opt).myInstallSnapshotResponseChan:
-		var matchIndex = (*opt)._state.handleInstallSnapshotResponse(installSnapshotResponse)
-
-		// Check if unvoting member should be promoted to voting
-		var _, found = (*opt).unvotingConnections.Load((*installSnapshotResponse).Id)
-
-		if found && matchIndex >= (*opt)._state.getCommitIndex() {
-			(*opt)._state.updateServerConfiguration((*installSnapshotResponse).Id, [2]bool{false, true})
-			connMap, oldCount, newCount := startConfigurationChange(opt, (*installSnapshotResponse).Id, true)
-			var ok = (*opt)._state.addNewConfigurationLog(ConfigurationLog{(*installSnapshotResponse).Id, connMap, oldCount, newCount, nil})
-			if ok {
-				sendAppendEntriesRPCs(opt)
-			}
-		}
 	// Receive a response to a (previously) issued RequestVoteRPC
 	// Do nothing, just flush the channel
 	case <-(*opt).myRequestVoteResponseChan:
@@ -654,7 +693,8 @@ func applyLog(opt *options, raftLog RaftLog) {
 		(*opt)._state.updateServerLastActionApplied(ServerID(raftLog.Log.Id), raftLog.Log.ActionId)
 	}
 	if (*opt)._state.getState() == Leader {
-		if raftLog.Type == Game {
+		if raftLog.Type == Game && raftLog.Log.ChanApplied != nil {
+			// What if we received these logs as followers i.e. in append entries RPC and THEN we became leader?
 			raftLog.Log.ChanApplied <- true
 		} else if raftLog.Type == Configuration {
 			// If a configuration change raftLog is committed (OLD, NEW configuration), generate its closure
@@ -683,6 +723,9 @@ func checkLogsToApply(opt *options) {
 }
 
 func run(opt *options) {
+	go handleClientMessages(opt)
+	go handleAppendEntriesRPCResponses(opt)
+	go handleInstallSnapshotResponses(opt)
 	for {
 		// First check if there are logs to apply to the state machine
 		checkLogsToApply(opt)

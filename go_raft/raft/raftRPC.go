@@ -16,9 +16,10 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesResponse struct {
-	Id      ServerID
-	Term    int
-	Success bool
+	Id        ServerID
+	Term      int
+	Success   bool
+	LastIndex int
 }
 
 type RequestVoteArgs struct {
@@ -92,8 +93,9 @@ func (listener *RaftListener) AppendEntriesRPC(args *AppendEntriesArgs, reply *A
 	reply.Id = repl.Id
 	reply.Term = repl.Term
 	reply.Success = repl.Success
+	reply.LastIndex = repl.LastIndex
 	if len((*args).Entries) > 0 {
-		log.Info("Respond to AppendEntriesRPC: ", (*args).LeaderID, " ", repl.Success)
+		log.Info("Respond to AppendEntriesRPC: ", (*args).LeaderID, " ", (*args).PrevLogIndex, " ", reply)
 	}
 	// TODO handle timeout
 	return nil

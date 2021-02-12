@@ -194,8 +194,8 @@ type state interface {
  * 3. Votes for itself
  */
 func (_state *stateImpl) startElection() {
-	log.Info("Become Candidate")
 	_state.currentTerm++
+	log.Info("Become Candidate: ", _state.currentTerm)
 	_state.currentState = Candidate
 	_state.votedFor = _state.id
 	// TODO verify that this is correct
@@ -217,7 +217,6 @@ func (_state *stateImpl) checkElectionTimeout() *time.Timer {
 	if !_state.electionTimeoutStarted {
 		// The election timeout is randomized to prevent split votes
 		var electionTimeout = time.Duration(time.Millisecond * time.Duration(rand.Intn(maxElectionTimeout-minElectionTimeout)+minElectionTimeout))
-		// var electionTimeout = time.Duration(time.Second * 2)
 		_state.electionTimeoutStarted = true
 		_state.electionTimer = time.NewTimer(electionTimeout)
 	}
@@ -305,10 +304,7 @@ func (_state *stateImpl) winElection() {
 	_state.currentLeader = _state.id
 	for id := range _state.nextIndex {
 		_state.nextIndex[id] = lastLogIdx + 1
-		//_state.nextIndex[id] = 0
 	}
-	//_state.matchIndex[_state.id] = lastLogIdx
-	//_state.lastSentLogIndex[_state.id] = lastLogIdx
 	_state.matchIndex[_state.id] = -1
 	_state.lastSentLogIndex[_state.id] = -1
 }
@@ -424,6 +420,7 @@ func (_state *stateImpl) addNewConfigurationLog(conf ConfigurationLog) bool {
 }
 
 func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntriesResponse {
+	var lastLogIdx, _ = _state.getLastLogIdxTerm()
 	// Handle Candidate and Leader mode particular conditions
 	if _state.currentState != Follower {
 		if (*aea).Term >= _state.currentTerm {
@@ -432,15 +429,15 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 			log.Info("Become Follower")
 			_state.currentState = Follower
 			_state.currentTerm = (*aea).Term
-			_state.currentLeader = (*aea).LeaderID
+			// _state.currentLeader = (*aea).LeaderID
 		} else {
-			return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
+			return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
 		}
 	}
 
 	// 1. Reply false if rpc term < currentTerm
 	if (*aea).Term < _state.currentTerm {
-		return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
+		return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
 	}
 
 	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
@@ -449,11 +446,11 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 		// If we didn't find the previous log index it may be included in the last snapshot
 		// so we check if there exists a last snapshot and if it includes the previous log index
 		if _state.lastSnapshot == nil || (*_state.lastSnapshot).lastIncludedIndex < (*aea).PrevLogIndex {
-			return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
+			return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
 		}
 	} else {
 		if _state.logs[prevLogIdx].Term != (*aea).PrevLogTerm {
-			return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
+			return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
 		}
 	}
 
@@ -470,13 +467,13 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 	// Check if the node has enough log space for all the logs of the AppendEntriesRPC
 	if startNextIdx+len((*aea).Entries) >= logArrayCapacity {
 		if !_state.takeSnapshot() {
-			return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
+			return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
 		}
 	}
 	_, prevLogIdx = _state.findArrayIndexByLogIndex((*aea).PrevLogIndex)
 	startNextIdx = prevLogIdx + 1
 	if startNextIdx+len((*aea).Entries) >= logArrayCapacity {
-		return &AppendEntriesResponse{_state.id, _state.currentTerm, false}
+		return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
 	}
 
 	// At this point we should be confident that we have enough space for the logs
@@ -506,14 +503,22 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 		}
 	}
 
-	return &AppendEntriesResponse{_state.id, _state.currentTerm, true}
+	return &AppendEntriesResponse{_state.id, _state.currentTerm, true, lastLogIdx}
 }
 
 func (_state *stateImpl) handleAppendEntriesResponse(aer *AppendEntriesResponse) (int, bool) {
 	_state.lock.Lock()
-	if !(*aer).Success && _state.nextIndex[(*aer).Id] > 0 {
+	if !(*aer).Success {
+		if (*aer).Term > _state.currentTerm {
+			log.Info("Become Follower")
+			_state.currentState = Follower
+			_state.currentTerm = (*aer).Term
+			// _state.currentLeader = (*aer).Id
+			_state.lock.Unlock()
+			return -1, false
+		}
 		var snapshot = false
-		_state.nextIndex[(*aer).Id]--
+		_state.nextIndex[(*aer).Id] = (*aer).LastIndex
 		if _state.lastSnapshot != nil && _state.nextIndex[(*aer).Id] <= (*_state.lastSnapshot).lastIncludedIndex {
 			snapshot = true
 		}
@@ -612,9 +617,6 @@ func (_state *stateImpl) addNewServer(sid ServerID) {
 
 func (_state *stateImpl) removeServer(sid ServerID) {
 	_state.lock.Lock()
-	delete(_state.lastSentLogIndex, sid)
-	delete(_state.nextIndex, sid)
-	delete(_state.matchIndex, sid)
 	delete(_state.serverLastActionApplied, sid)
 	if _state.serverConfiguration[sid][0] {
 		_state.oldServerCount--
@@ -709,18 +711,20 @@ func (_state *stateImpl) prepareInstallSnapshotRPC() *InstallSnapshotArgs {
 }
 
 func (_state *stateImpl) handleInstallSnapshotResponse(isr *InstallSnapshotResponse) int {
+	_state.lock.Lock()
 	if !(*isr).Success {
 		if (*isr).Term >= _state.currentTerm {
 			log.Info("Become Follower")
 			_state.currentState = Follower
 			_state.currentTerm = (*isr).Term
-			_state.currentLeader = (*isr).Id
+			// _state.currentLeader = (*isr).Id
 		}
+		_state.lock.Unlock()
 		return -1
 	}
-	_state.lock.Lock()
 	_state.lastSentLogIndex[(*isr).Id] = (*isr).LastIncludedIndex
 	_state.nextIndex[(*isr).Id] = (*isr).LastIncludedIndex + 1
+
 	_state.matchIndex[(*isr).Id] = (*isr).LastIncludedIndex
 	_state.lock.Unlock()
 	return _state.matchIndex[(*isr).Id]
