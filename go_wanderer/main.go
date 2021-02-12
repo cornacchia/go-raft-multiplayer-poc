@@ -102,7 +102,7 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, changeC
 				changeConnectionChan <- (*response).LeaderID
 			} else {
 				(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, [2]bool{false, true}, (*opt).connections}
-				changeConnectionChan <- (*opt).id
+				changeConnectionChan <- ""
 			}
 			time.Sleep(time.Millisecond * 300)
 			// Send again
