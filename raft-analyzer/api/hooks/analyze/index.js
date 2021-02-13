@@ -26,7 +26,8 @@ let currentAnalysis = {
     leaderCompleteness: []
   },
   appliedLogs: {},
-  mainEvents: []
+  mainEvents: [],
+  nodeStatus: {}
 }
 const fieldsToSendToClient = ['lastLeaderTerm', 'lastCommittedLog', 'violations', 'mainEvents']
 
@@ -37,11 +38,13 @@ function resetAnalysis() {
     violations: {
       electionSafety: [],
       stateMachineSafety: [],
-      leaderCompleteness: []
+      leaderCompleteness: [],
+      leaderAppendOnly: []
     },
     addedLogs: {},
     appliedLogs: {},
-    mainEvents: []
+    mainEvents: [],
+    nodeStatus: {}
   }
 }
 
@@ -71,13 +74,22 @@ async function runAnalysis() {
     const log = await sails.getDatastore().manager.collection(currentCollection).findOne({ i: idx })
     if (!log) finish = true
     else {
-      if (log.lu) currentAnalysis.mainEvents.push(log)
+      if (log.lu) {
+        currentAnalysis.nodeStatus[log.n] = { status: 'Follower', idx: log.i }
+        currentAnalysis.mainEvents.push(log)
+      }
 
-      if (log.bc) currentAnalysis.mainEvents.push(log)
+      if (log.bf) currentAnalysis.nodeStatus[log.n] = { status: 'Follower', idx: log.i }
+
+      if (log.bc) {
+        currentAnalysis.nodeStatus[log.n] = { status: 'Candidate', idx: log.i }
+        currentAnalysis.mainEvents.push(log)
+      }
 
       if (log.sd) currentAnalysis.mainEvents.push(log)
 
       if (log.bl) {
+        currentAnalysis.nodeStatus[log.n] = { status: 'Leader', idx: log.i }
         currentAnalysis.mainEvents.push(log)
         // Election Safety check
         // The logs are accessed in order, we expect the new leader terms to be ordered as well
@@ -128,6 +140,15 @@ async function runAnalysis() {
       }
 
       if (log.adl) currentAnalysis.addedLogs[log.n] = log.adl
+
+      // Leader append only check
+      if (log.rl && currentAnalysis.nodeStatus[log.n] === 'Leader') {
+        sails.log.warn(logHeader + 'Leader append only violation')
+        currentAnalysis.violations.leaderAppendOnly.push({
+          nodeStatus: currentAnalysis.nodeStatus[log.n],
+          log: log
+        })
+      }
 
       idx += 1
     }

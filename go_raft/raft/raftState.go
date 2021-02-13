@@ -486,6 +486,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 		} else {
 			// If the terms conflict (different index or same index and different terms) remove all the remaining logs
 			if _state.logs[nextIdx].Idx != (*aea).Entries[i].Idx || _state.logs[nextIdx].Term != (*aea).Entries[i].Term {
+				log.Info("State - Removing logs: ", nextIdx, " ", _state.nextLogArrayIdx-1, " (AppendEntriesRPC)")
 				_state.logs[nextIdx] = (*aea).Entries[i]
 				_state.nextLogArrayIdx = nextIdx + 1
 				log.Info("State - add raft log: ", (*aea).Entries[i].Idx)
@@ -743,6 +744,12 @@ func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) 
 	log.Trace("Received install snapshot request")
 	if !_state.checkIfSnapshotShouldBeInstalled(isa) {
 		return &InstallSnapshotResponse{_state.id, _state.currentTerm, false, -1, -1}
+	}
+
+	var lastLogIdx, _ = _state.getLastLogIdxTerm()
+	if (*isa).LastIncludedIndex < lastLogIdx {
+		var lastIncludedArrIdx, _ = _state.findArrayIndexByLogIndex((*isa).LastIncludedIndex)
+		log.Info("State - Removing logs: ", lastIncludedArrIdx, " ", _state.nextLogArrayIdx-1, " (InstallSnapshotRPC)")
 	}
 
 	// Apply snapshot

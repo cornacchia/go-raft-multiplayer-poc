@@ -191,6 +191,15 @@ function parseAddLog(line, obj) {
   }
 }
 
+function parseRemoveLogs(line, obj) {
+  const removeLogMatch = sails.config.regex.removeLog.exec(line)
+  if (removeLogMatch) {
+    const startIdx = removeLogMatch[1]
+    const endIdx = removeLogMatch[2]
+    obj.rl = { si: startIdx, ei: endIdx }
+  }
+}
+
 function parseLogLine(line, nodeId) {
   let result = { n: nodeId }
   parseTimestamp(line, result)
@@ -209,6 +218,7 @@ function parseLogLine(line, nodeId) {
   parseShuttingDown(line, result)
   parseActionTimeout(line, result)
   parseAddLog(line, result)
+  parseRemoveLogs(line, result)
 
   return result
 }

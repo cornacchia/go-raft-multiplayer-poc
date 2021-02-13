@@ -18,4 +18,5 @@ module.exports.regex = {
   shuttingDown: /Main - Shutdown complete/,
   actionTimeout: /Main - Action time: (\d+)/, // timeout ms
   addLog: /State - add raft log: (\d+)/, // idx
+  removeLog: /State - Removing logs: (\d+) (\d+)/, // start array idx, end array idx
 }
