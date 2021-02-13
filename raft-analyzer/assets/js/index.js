@@ -77,8 +77,8 @@ function getLogHtml(log) {
   if (log.bl) htmlString += 'Become Leader (term: ' + log.bl.t + ')'
   if (log.al) htmlString += 'Apply log: ' + log.al.i
   if (log.sd) htmlString += 'Shutting down'
-  if (log.adl) htmlString += 'Add log: ' + log.adl
-  if (log.rl) htmlString += 'Remove logs (array start idx: ' + log.rl.si + ', array end idx: ' + log.rl.ei + ')'
+  if (log.adl) htmlString += 'Add log: ' + log.adl.i
+  if (log.rl) htmlString += 'Remove logs (from: ' + log.rl.si + ', to: ' + log.rl.ei + ')'
   return htmlString
 }
 
@@ -152,6 +152,15 @@ function renderLeaderAppendOnlyViolations(data) {
   return result
 }
 
+function renderLogMatchingViolations(data) {
+  if (data.length === 0) return '<li><i class="fas fa-check"></i> No log matching violations</li>'
+  let result = ''
+  for (const datum of data) {
+    result += '<li> Log matching violation. Expected: ' + datum.lastHash + ', found: ' + datum.log.adl.h + '</li>'
+  }
+  return result
+}
+
 function renderStateMachineSafetyViolations(data) {
   if (data.length === 0) return '<li><i class="fas fa-check"></i> No state machine safety violations</li>'
   let result = ''
@@ -175,6 +184,7 @@ function renderAnalysisResults(analysis) {
   resultHtml += '<ul>'
   resultHtml += renderElectionSafetyViolations(analysis.violations.electionSafety)
   resultHtml += renderLeaderAppendOnlyViolations(analysis.violations.leaderAppendOnly)
+  resultHtml += renderLogMatchingViolations(analysis.violations.logMatching)
   resultHtml += renderStateMachineSafetyViolations(analysis.violations.stateMachineSafety)
   resultHtml += renderLeaderCompletenessViolations(analysis.violations.leaderCompleteness)
   resultHtml += '</ul>'

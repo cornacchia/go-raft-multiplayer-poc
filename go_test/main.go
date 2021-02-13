@@ -49,7 +49,7 @@ func killProcess(i int, signal syscall.Signal) {
 }
 
 func killAll(pkgToTest string) {
-	cmd := exec.Command("killall", "-SIGTERM", pkgToTest)
+	cmd := exec.Command("killall", "-SIGKILL", pkgToTest)
 	log.Printf("Killing all workers")
 	err := cmd.Run()
 	log.Printf("Killing finished with error: %v", err)

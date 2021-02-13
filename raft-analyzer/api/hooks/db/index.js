@@ -187,7 +187,9 @@ function parseAddLog(line, obj) {
   const addLogMatch = sails.config.regex.addLog.exec(line)
   if (addLogMatch) {
     const logIdx = addLogMatch[1]
-    obj.adl = parseInt(logIdx)
+    const term = addLogMatch[2]
+    const hash = addLogMatch[3]
+    obj.adl = { i: parseInt(logIdx), t: parseInt(term), h: hash}
   }
 }
 

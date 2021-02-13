@@ -17,6 +17,6 @@ module.exports.regex = {
   applyLog: /Raft apply log: (\d+) (.*)"/, // log idx, raft log string representation
   shuttingDown: /Main - Shutdown complete/,
   actionTimeout: /Main - Action time: (\d+)/, // timeout ms
-  addLog: /State - add raft log: (\d+)/, // idx
+  addLog: /State - add raft log: (\d+) (\d+) (.*)"/, // idx, term, hash
   removeLog: /State - Removing logs: (\d+) (\d+)/, // start array idx, end array idx
 }
