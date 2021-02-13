@@ -735,12 +735,7 @@ func (_state *stateImpl) checkIfSnapshotShouldBeInstalled(isa *InstallSnapshotAr
 	if (*isa).Term < _state.currentTerm {
 		// Do not install snapshots for obsolete terms
 		result = false
-	} //else if _state.lastSnapshot != nil {
-	// Do not install snapshots more than once or overwrite greater snapshots
-	//if (*isa).LastIncludedIndex <= _state.lastSnapshot.lastIncludedIndex && (*isa).LastIncludedTerm <= _state.lastSnapshot.lastIncludedTerm {
-	//	result = false
-	//}
-	//}
+	}
 	return result
 }
 
@@ -749,11 +744,6 @@ func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) 
 	if !_state.checkIfSnapshotShouldBeInstalled(isa) {
 		return &InstallSnapshotResponse{_state.id, _state.currentTerm, false, -1, -1}
 	}
-
-	// var lastLogIdx = -1
-	//if _state.nextLogArrayIdx > 0 {
-	//	lastLogIdx = _state.logs[_state.nextLogArrayIdx-1].Idx
-	//}
 
 	// Apply snapshot
 	var newSnapshot = snapshot{
@@ -768,26 +758,6 @@ func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) 
 	_state.nextLogArrayIdx = 0
 	_state.commitIndex = (*isa).LastIncludedIndex
 	_state.lastApplied = (*isa).LastIncludedIndex
-	/*
-		if (*isa).LastIncludedIndex >= lastLogIdx {
-			_state.nextLogArrayIdx = 0
-			_state.commitIndex = (*isa).LastIncludedIndex
-			_state.lastApplied = (*isa).LastIncludedIndex
-		} else {
-			var found, lastIncludedIdx = _state.findArrayIndexByLogIndex((*isa).LastIncludedIndex)
-			if found {
-				_state.copyLogsToBeginningOfRecord(lastIncludedIdx + 1)
-			}
-
-			if _state.commitIndex < (*isa).LastIncludedIndex {
-				_state.commitIndex = (*isa).LastIncludedIndex
-			}
-			if _state.lastApplied < (*isa).LastIncludedIndex {
-				_state.lastApplied = (*isa).LastIncludedIndex
-			}
-
-		}
-	*/
 
 	log.Trace("State: install snapshot ", (*isa).LastIncludedIndex)
 	return &InstallSnapshotResponse{_state.id, _state.currentTerm, true, (*isa).LastIncludedIndex, (*isa).LastIncludedTerm}
