@@ -58,7 +58,6 @@ type RaftLog struct {
 	Type             LogType
 	Log              GameLog
 	ConfigurationLog ConfigurationLog
-	Hash             [32]byte
 }
 
 type snapshot struct {
@@ -87,6 +86,7 @@ type stateImpl struct {
 	currentTerm             int
 	votedFor                ServerID
 	logs                    [logArrayCapacity]RaftLog
+	logHashes               [logArrayCapacity][32]byte
 	nextLogArrayIdx         int
 	lastSnapshot            *snapshot
 	currentState            instanceState
@@ -104,7 +104,7 @@ type stateImpl struct {
 	snapshotResponseChan    chan []byte
 }
 
-func hashRaftLog(rl RaftLog) [32]byte {
+func getRaftLogBytes(rl RaftLog) []byte {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.LittleEndian, rl.Idx)
 	binary.Write(buf, binary.LittleEndian, rl.Term)
@@ -117,7 +117,7 @@ func hashRaftLog(rl RaftLog) [32]byte {
 	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.ConnMap)
 	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.OldCount)
 	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.NewCount)
-	return sha256.Sum256(buf.Bytes())
+	return buf.Bytes()
 }
 
 func raftLogToString(log RaftLog) string {
@@ -129,12 +129,12 @@ func raftLogToString(log RaftLog) string {
 
 func newGameRaftLog(idx int, term int, log GameLog) RaftLog {
 	var emptyCfgLog = ConfigurationLog{"", nil, 0, 0, nil}
-	return RaftLog{idx, term, Game, log, emptyCfgLog, [32]byte{}}
+	return RaftLog{idx, term, Game, log, emptyCfgLog}
 }
 
 func newConfigurationRaftLog(idx int, term int, cfgLog ConfigurationLog) RaftLog {
 	var emptyLog = GameLog{"", -1, "", []byte{}, nil}
-	return RaftLog{idx, term, Configuration, emptyLog, cfgLog, [32]byte{}}
+	return RaftLog{idx, term, Configuration, emptyLog, cfgLog}
 }
 
 // NewState returns an empty state, only used once at the beginning
@@ -157,6 +157,7 @@ func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, 
 		0,
 		"",
 		[logArrayCapacity]RaftLog{},
+		[logArrayCapacity][32]byte{},
 		0,
 		nil,
 		Follower,
@@ -406,14 +407,17 @@ func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
 }
 
 func (_state *stateImpl) getLogHash(raftLog RaftLog) [32]byte {
-	var logHash = hashRaftLog(raftLog)
+	var logBytes = getRaftLogBytes(raftLog)
 	var _, logArrIdx = _state.findArrayIndexByLogIndex(raftLog.Idx)
 	if logArrIdx > 0 {
-		return sha256.Sum256(append(logHash[:], _state.logs[logArrIdx-1].Hash[:]...))
+		log.Trace("Compute hash based on previous log: ", fmt.Sprintf("%x", _state.logHashes[logArrIdx-1]))
+		return sha256.Sum256(append(logBytes[:], _state.logHashes[logArrIdx-1][:]...))
 	} else if _state.lastSnapshot != nil {
-		return sha256.Sum256(append(logHash[:], _state.lastSnapshot.hash[:]...))
+		log.Trace("Compute hash based on snapshot: ", fmt.Sprintf("%x", _state.lastSnapshot.hash))
+		return sha256.Sum256(append(logBytes[:], _state.lastSnapshot.hash[:]...))
 	}
-	return logHash
+	log.Trace("Compute hash bsed on raft log only")
+	return sha256.Sum256(logBytes[:])
 }
 
 func (_state *stateImpl) addNewGameLog(msg GameLog) bool {
@@ -429,8 +433,8 @@ func (_state *stateImpl) addNewGameLog(msg GameLog) bool {
 	}
 	_state.logs[_state.nextLogArrayIdx] = newLog
 	_state.nextLogArrayIdx++
-	_state.logs[_state.nextLogArrayIdx-1].Hash = _state.getLogHash(newLog)
-	log.Info("State - add raft log: ", newLog.Idx, " ", newLog.Term, " ", fmt.Sprintf("%x", _state.logs[_state.nextLogArrayIdx-1].Hash))
+	_state.logHashes[_state.nextLogArrayIdx-1] = _state.getLogHash(newLog)
+	log.Info("State - add raft log: ", newLog.Idx, " ", newLog.Term, " ", fmt.Sprintf("%x", _state.logHashes[_state.nextLogArrayIdx-1]))
 	_state.matchIndex[_state.id] = newLog.Idx
 	_state.lastSentLogIndex[_state.id] = newLog.Idx
 	_state.nextIndex[_state.id] = newLog.Idx + 1
@@ -451,8 +455,8 @@ func (_state *stateImpl) addNewConfigurationLog(conf ConfigurationLog) bool {
 	}
 	_state.logs[_state.nextLogArrayIdx] = newLog
 	_state.nextLogArrayIdx++
-	_state.logs[_state.nextLogArrayIdx-1].Hash = _state.getLogHash(newLog)
-	log.Info("State - add raft log: ", newLog.Idx, " ", newLog.Term, " ", fmt.Sprintf("%x", _state.logs[_state.nextLogArrayIdx-1].Hash))
+	_state.logHashes[_state.nextLogArrayIdx-1] = _state.getLogHash(newLog)
+	log.Info("State - add raft log: ", newLog.Idx, " ", newLog.Term, " ", fmt.Sprintf("%x", _state.logHashes[_state.nextLogArrayIdx-1]))
 	_state.matchIndex[_state.id] = newLog.Idx
 	_state.lastSentLogIndex[_state.id] = newLog.Idx
 	_state.nextIndex[_state.id] = newLog.Idx + 1
@@ -527,16 +531,16 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 		if nextIdx >= _state.nextLogArrayIdx {
 			_state.logs[nextIdx] = (*aea).Entries[i]
 			_state.nextLogArrayIdx = nextIdx + 1
-			_state.logs[nextIdx].Hash = _state.getLogHash(_state.logs[nextIdx])
-			log.Info("State - add raft log: ", _state.logs[nextIdx].Idx, " ", _state.logs[nextIdx].Term, " ", fmt.Sprintf("%x", _state.logs[nextIdx].Hash))
+			_state.logHashes[nextIdx] = _state.getLogHash(_state.logs[nextIdx])
+			log.Info("State - add raft log: ", _state.logs[nextIdx].Idx, " ", _state.logs[nextIdx].Term, " ", fmt.Sprintf("%x", _state.logHashes[nextIdx]))
 		} else {
 			// If the terms conflict (different index or same index and different terms) remove all the remaining logs
 			if _state.logs[nextIdx].Idx != (*aea).Entries[i].Idx || _state.logs[nextIdx].Term != (*aea).Entries[i].Term {
 				log.Info("State - Removing logs: ", _state.logs[nextIdx].Idx, " ", _state.logs[_state.nextLogArrayIdx-1].Idx, " (AppendEntriesRPC)")
 				_state.logs[nextIdx] = (*aea).Entries[i]
 				_state.nextLogArrayIdx = nextIdx + 1
-				_state.logs[nextIdx].Hash = _state.getLogHash(_state.logs[nextIdx])
-				log.Info("State - add raft log: ", _state.logs[nextIdx].Idx, " ", _state.logs[nextIdx].Term, " ", fmt.Sprintf("%x", _state.logs[nextIdx].Hash))
+				_state.logHashes[nextIdx] = _state.getLogHash(_state.logs[nextIdx])
+				log.Info("State - add raft log: ", _state.logs[nextIdx].Idx, " ", _state.logs[nextIdx].Term, " ", fmt.Sprintf("%x", _state.logHashes[nextIdx]))
 			}
 			// Otherwise we should be confident that the logs are the same and need not be replaced
 		}
@@ -722,6 +726,7 @@ func (_state *stateImpl) copyLogsToBeginningOfRecord(startLog int) {
 	for startLog+restartIdx < _state.nextLogArrayIdx {
 		// log.Trace("Copy log from ", startLog+restartIdx, "(", _state.logs[startLog+restartIdx].Idx, ")", "to ", restartIdx)
 		_state.logs[restartIdx] = _state.logs[startLog+restartIdx]
+		_state.logHashes[restartIdx] = _state.logHashes[startLog+restartIdx]
 		restartIdx++
 	}
 	_state.nextLogArrayIdx = restartIdx
@@ -742,7 +747,7 @@ func (_state *stateImpl) takeSnapshot() bool {
 		currentGameState,
 		_state.logs[lastAppliedIdx].Idx,
 		_state.logs[lastAppliedIdx].Term,
-		_state.logs[lastAppliedIdx].Hash}
+		_state.logHashes[lastAppliedIdx]}
 	_state.lastSnapshot = &newSnapshot
 	// Copy remaining logs at the start of the log array
 	_state.copyLogsToBeginningOfRecord(lastAppliedIdx + 1)
