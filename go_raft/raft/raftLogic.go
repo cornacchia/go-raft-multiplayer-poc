@@ -356,7 +356,7 @@ func handleClientMessages(opt *options) {
 				}
 			} else {
 				// Handle player game action (i.e. movement)
-				if act.Msg.ActionId > (*opt)._state.getServerLastActionApplied(ServerID(act.Msg.Id)) {
+				if act.Msg.ActionId > (*opt)._state.getClientLastActionApplied(ServerID(act.Msg.Id)) {
 					// In this case the action is new
 					var ok = (*opt)._state.addNewGameLog(act.Msg)
 					if ok {
@@ -707,7 +707,7 @@ func applyLog(opt *options, raftLog RaftLog) {
 	// TODO remove player from game if disconnected
 	if raftLog.Type == Game {
 		(*opt).actionChan <- raftLog.Log
-		(*opt)._state.updateServerLastActionApplied(ServerID(raftLog.Log.Id), raftLog.Log.ActionId)
+		(*opt)._state.updateClientLastActionApplied(ServerID(raftLog.Log.Id), raftLog.Log.ActionId)
 	}
 	if (*opt)._state.getState() == Leader {
 		if raftLog.Type == Game && raftLog.Log.ChanApplied != nil {

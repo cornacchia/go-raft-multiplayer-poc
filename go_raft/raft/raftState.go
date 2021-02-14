@@ -70,6 +70,10 @@ type snapshot struct {
 	hash                [32]byte
 }
 
+type clientStateStruct struct {
+	lastActionApplied int64
+}
+
 // ServerID is the identification code for a raft server
 type ServerID string
 
@@ -95,7 +99,7 @@ type stateImpl struct {
 	nextIndex               map[ServerID]int
 	matchIndex              map[ServerID]int
 	serverConfiguration     map[ServerID][2]bool
-	serverLastActionApplied map[ServerID]int64
+	clientState             map[ServerID]clientStateStruct
 	newServerCount          int
 	oldServerCount          int
 	newServerResponseChan   map[ServerID]chan bool
@@ -143,7 +147,7 @@ func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, 
 	var nextIndex = make(map[ServerID]int)
 	var matchIndex = make(map[ServerID]int)
 	var serverConfiguration = make(map[ServerID][2]bool)
-	var serverLastActionApplied = make(map[ServerID]int64)
+	var clientState = make(map[ServerID]clientStateStruct)
 	var newServerResponseChan = make(map[ServerID]chan bool)
 	var lock = &sync.Mutex{}
 	var state = stateImpl{
@@ -166,14 +170,13 @@ func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, 
 		nextIndex,
 		matchIndex,
 		serverConfiguration,
-		serverLastActionApplied,
+		clientState,
 		0,
 		0,
 		newServerResponseChan,
 		lock,
 		snapshotRequestChan,
 		snapshotResponseChan}
-	// state.addNewGameLog(GameLog{"", -1, "", []byte{}, nil})
 	return &state
 }
 
@@ -208,8 +211,8 @@ type state interface {
 	prepareInstallSnapshotRPC() *InstallSnapshotArgs
 	handleInstallSnapshotResponse(*InstallSnapshotResponse) int
 	handleInstallSnapshotRequest(*InstallSnapshotArgs) *InstallSnapshotResponse
-	updateServerLastActionApplied(ServerID, int64)
-	getServerLastActionApplied(ServerID) int64
+	updateClientLastActionApplied(ServerID, int64)
+	getClientLastActionApplied(ServerID) int64
 }
 
 /* To start a new election a server:
@@ -673,7 +676,7 @@ func (_state *stateImpl) addNewServer(sid ServerID) {
 
 func (_state *stateImpl) removeServer(sid ServerID) {
 	_state.lock.Lock()
-	delete(_state.serverLastActionApplied, sid)
+	delete(_state.clientState, sid)
 	if _state.serverConfiguration[sid][0] {
 		_state.oldServerCount--
 	}
@@ -699,8 +702,8 @@ func (_state *stateImpl) updateServerConfiguration(sid ServerID, conf [2]bool) {
 	}
 	log.Trace("State: Update server configuration ", _state.serverConfiguration)
 	log.Trace("State: new: ", _state.newServerCount, ", old: ", _state.oldServerCount)
-	if _, found := _state.serverLastActionApplied[sid]; !found {
-		_state.serverLastActionApplied[sid] = -1
+	if _, found := _state.clientState[sid]; !found {
+		_state.clientState[sid] = clientStateStruct{-1}
 	}
 	_state.lock.Unlock()
 }
@@ -829,15 +832,17 @@ func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) 
 	return &InstallSnapshotResponse{_state.id, _state.currentTerm, true, (*isa).LastIncludedIndex, (*isa).LastIncludedTerm}
 }
 
-func (_state *stateImpl) getServerLastActionApplied(sid ServerID) int64 {
+func (_state *stateImpl) getClientLastActionApplied(sid ServerID) int64 {
 	_state.lock.Lock()
-	var result = _state.serverLastActionApplied[sid]
+	var result = _state.clientState[sid].lastActionApplied
 	_state.lock.Unlock()
 	return result
 }
 
-func (_state *stateImpl) updateServerLastActionApplied(sid ServerID, idx int64) {
+func (_state *stateImpl) updateClientLastActionApplied(sid ServerID, idx int64) {
 	_state.lock.Lock()
-	_state.serverLastActionApplied[sid] = idx
+	var previousState = _state.clientState[sid]
+	previousState.lastActionApplied = idx
+	_state.clientState[sid] = previousState
 	_state.lock.Unlock()
 }
