@@ -331,13 +331,18 @@ func handleClientMessages(opt *options) {
 				log.Trace("Received request to connect ", act.Msg.Id)
 				// Connect to new node and add it to the unvotingConnections map
 				go func() {
-					// Check if this is a reconnection after a node failure
-					if _, found := (*opt).connections.LoadAndDelete(ServerID(act.Msg.Id)); found {
-						(*opt)._state.removeServer(ServerID(act.Msg.Id))
+					if ServerID(act.Msg.Id) == (*opt)._state.getID() {
+						(*opt)._state.updateNewServerResponseChans(ServerID(act.Msg.Id), act.Msg.ChanApplied)
+						promoteUnvotingConnection(opt, (*opt)._state.getID())
+					} else {
+						// Check if this is a reconnection after a node failure
+						if _, found := (*opt).connections.LoadAndDelete(ServerID(act.Msg.Id)); found {
+							(*opt)._state.removeServer(ServerID(act.Msg.Id))
+						}
+						(*opt).requestConnectionChan <- RequestConnection{ServerID(act.Msg.Id), [2]bool{false, false}, (*opt).unvotingConnections}
+						(*opt)._state.updateServerConfiguration(ServerID(act.Msg.Id), [2]bool{false, false})
+						(*opt)._state.updateNewServerResponseChans(ServerID(act.Msg.Id), act.Msg.ChanApplied)
 					}
-					(*opt).requestConnectionChan <- RequestConnection{ServerID(act.Msg.Id), [2]bool{false, false}, (*opt).unvotingConnections}
-					(*opt)._state.updateServerConfiguration(ServerID(act.Msg.Id), [2]bool{false, false})
-					(*opt)._state.updateNewServerResponseChans(ServerID(act.Msg.Id), act.Msg.ChanApplied)
 				}()
 				go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
 			} else if act.Msg.Type == "Disconnect" {
@@ -370,6 +375,15 @@ func handleClientMessages(opt *options) {
 	}
 }
 
+func promoteUnvotingConnection(opt *options, id ServerID) {
+	(*opt)._state.updateServerConfiguration(id, [2]bool{false, true})
+	connMap, oldCount, newCount := startConfigurationChange(opt, id, true)
+	var ok = (*opt)._state.addNewConfigurationLog(ConfigurationLog{id, connMap, oldCount, newCount, nil})
+	if ok {
+		sendAppendEntriesRPCs(opt)
+	}
+}
+
 func handleAppendEntriesRPCResponses(opt *options) {
 	for {
 		appendEntriesResponse := <-(*opt).myAppendEntriesResponseChan
@@ -384,12 +398,7 @@ func handleAppendEntriesRPCResponses(opt *options) {
 				sendInstallSnapshotRPC(opt, found, (*appendEntriesResponse).Id)
 			}
 			if found && matchIndex >= (*opt)._state.getCommitIndex() {
-				(*opt)._state.updateServerConfiguration((*appendEntriesResponse).Id, [2]bool{false, true})
-				connMap, oldCount, newCount := startConfigurationChange(opt, (*appendEntriesResponse).Id, true)
-				var ok = (*opt)._state.addNewConfigurationLog(ConfigurationLog{(*appendEntriesResponse).Id, connMap, oldCount, newCount, nil})
-				if ok {
-					sendAppendEntriesRPCs(opt)
-				}
+				promoteUnvotingConnection(opt, (*appendEntriesResponse).Id)
 			}
 		}
 	}
@@ -461,6 +470,8 @@ func handleFollower(opt *options) {
 func handleCandidate(opt *options) {
 	var electionTimeoutTimer = (*opt)._state.checkElectionTimeout()
 	select {
+	case <-(*opt).connectedChan:
+		(*opt).connected = true
 	// Received message from client: respond with correct leader id
 	case act := <-(*opt).msgChan:
 		act.ChanResponse <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
@@ -610,8 +621,12 @@ func startConfigurationChange(opt *options, newID ServerID, add bool) (map[Serve
 	var connectionMap = map[ServerID][2]bool{}
 	// Remove new connection from unvoting connection list
 	var newConnection RaftConnection
-	if add {
+	if add && newID != (*opt)._state.getID() {
 		var conn, _ = (*(*opt).unvotingConnections).LoadAndDelete(newID)
+		newConnection = conn.(RaftConnection)
+	}
+	if add && newID == (*opt)._state.getID() {
+		var conn, _ = (*(*opt).connections).LoadAndDelete(newID)
 		newConnection = conn.(RaftConnection)
 	}
 
@@ -665,6 +680,8 @@ func finishConfigurationChange(opt *options, add bool) (map[ServerID][2]bool, in
 func handleLeader(opt *options) {
 	const hearthbeatTimeout time.Duration = 20
 	select {
+	case <-(*opt).connectedChan:
+		(*opt).connected = true
 	// Receive an AppendEntriesRPC
 	case appEntrArgs := <-(*opt).appendEntriesArgsChan:
 		var response = (*opt)._state.handleAppendEntries(appEntrArgs)
