@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"crypto/rsa"
 	"net"
 	"net/http"
 	"net/rpc"
@@ -38,7 +39,8 @@ type options struct {
 	// This is used to receive AppendEntriesRPC arguments from other nodes (through the listener)
 	appendEntriesArgsChan chan *AppendEntriesArgs
 	// This is used to send AppendEntriesRPC responses to the other nodes (through the listener)
-	appendEntriesResponseChan chan *AppendEntriesResponse
+	appendEntriesResponseChan      chan *AppendEntriesResponse
+	otherAppendEntriesResponseChan chan *AppendEntriesResponse
 	// This is used to get responses from remote nodes when sending an AppendEntriesRPC
 	myAppendEntriesResponseChan chan *AppendEntriesResponse
 	// This is used to receive RequestVoteRPC arguments from the other nodes (through the listener)
@@ -56,25 +58,29 @@ type options struct {
 	// This is used to receive messages from clients RPC
 	msgChan chan gameAction
 	// This is used to send messages to the game engine
-	actionChan             chan GameLog
-	snapshotRequestChan    chan bool
-	snapshotResponseChan   chan []byte
-	snapshotInstallChan    chan []byte
-	connections            *sync.Map
-	numberOfNewConnections int
-	numberOfOldConnections int
-	unvotingConnections    *sync.Map
-	connectedChan          chan bool
-	connected              bool
-	requestConnectionChan  chan RequestConnection
+	actionChan               chan GameLog
+	updateLeaderArgsChan     chan *UpdateLeaderArgs
+	updateLeaderResponseChan chan *UpdateLeaderResponse
+	snapshotRequestChan      chan bool
+	snapshotResponseChan     chan []byte
+	snapshotInstallChan      chan []byte
+	connections              *sync.Map
+	numberOfNewConnections   int
+	numberOfOldConnections   int
+	unvotingConnections      *sync.Map
+	connectedChan            chan bool
+	connected                bool
+	requestConnectionChan    chan RequestConnection
+	clientKeys               map[string]*rsa.PublicKey
 }
 
 // Start function for server logic
-func Start(mode string, port string, otherServers []ServerID, actionChan chan GameLog, connectedChan chan bool, snapshotRequestChan chan bool, snapshotResponseChan chan []byte, installSnapshotChan chan []byte) *sync.Map {
+func Start(mode string, port string, otherServers []ServerID, actionChan chan GameLog, connectedChan chan bool, snapshotRequestChan chan bool, snapshotResponseChan chan []byte, installSnapshotChan chan []byte, nodeKeys map[ServerID]*rsa.PublicKey, clientKeys map[string]*rsa.PublicKey, privateKey *rsa.PrivateKey) *sync.Map {
 	var newOptions = &options{
 		mode,
-		newState(port, otherServers, snapshotRequestChan, snapshotResponseChan),
+		newState(port, otherServers, snapshotRequestChan, snapshotResponseChan, nodeKeys, clientKeys, privateKey),
 		make(chan *AppendEntriesArgs),
+		make(chan *AppendEntriesResponse),
 		make(chan *AppendEntriesResponse),
 		make(chan *AppendEntriesResponse),
 		make(chan *RequestVoteArgs),
@@ -85,6 +91,8 @@ func Start(mode string, port string, otherServers []ServerID, actionChan chan Ga
 		make(chan *InstallSnapshotResponse),
 		make(chan gameAction),
 		actionChan,
+		make(chan *UpdateLeaderArgs),
+		make(chan *UpdateLeaderResponse),
 		snapshotRequestChan,
 		snapshotResponseChan,
 		installSnapshotChan,
@@ -94,7 +102,8 @@ func Start(mode string, port string, otherServers []ServerID, actionChan chan Ga
 		nil,
 		connectedChan,
 		len(otherServers) == 0,
-		make(chan RequestConnection)}
+		make(chan RequestConnection),
+		clientKeys}
 	var raftListener = initRaftListener(newOptions)
 	startListeningServer(raftListener, port)
 	nodeConnections, num := ConnectToRaftServers(newOptions, newOptions._state.getID(), otherServers)
@@ -425,6 +434,30 @@ func handleInstallSnapshotResponses(opt *options) {
 	}
 }
 
+func handleOtherAppendEntriesResponse(opt *options) {
+	for {
+		appendEntriesResponse := <-(*opt).otherAppendEntriesResponseChan
+		var connection, found = (*(*opt).connections).Load((*appendEntriesResponse).Id)
+		if found {
+			var conn = connection.(RaftConnection)
+			(*opt)._state.updateAppendEntriesResponseSituation(appendEntriesResponse, conn.Old, conn.New)
+		}
+	}
+}
+
+func handleUpdateLeaderMessages(opt *options) {
+	for {
+		updateLeaderArgs := <-(*opt).updateLeaderArgsChan
+		var currentLeader = (*opt)._state.getCurrentLeader()
+		var success = false
+		if (*updateLeaderArgs).LeaderID == currentLeader {
+			(*opt)._state.ignoreHeartbeatsForThisTerm()
+			success = true
+		}
+		(*opt).updateLeaderResponseChan <- &UpdateLeaderResponse{success, currentLeader}
+	}
+}
+
 /*
  * A server remains in Follower state as long as it receives valid
  * RPCs from a Leader or Candidate.
@@ -435,10 +468,13 @@ func handleFollower(opt *options) {
 	// Receive an AppendEntriesRPC
 	case appEntrArgs := <-(*opt).appendEntriesArgsChan:
 		(*opt)._state.stopElectionTimeout()
-		var response = (*opt)._state.handleAppendEntries(appEntrArgs)
+		var response, signatureVerified = (*opt)._state.handleAppendEntries(appEntrArgs)
 		(*opt).appendEntriesResponseChan <- response
-		if (*response).Success {
+		if signatureVerified {
 			checkNewConfigurations(opt, appEntrArgs)
+		}
+		if len(appEntrArgs.Entries) > 0 {
+			broadcastAppendEntriesResponse(opt, response)
 		}
 		// Receive a RequestVoteRPC
 	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
@@ -478,10 +514,13 @@ func handleCandidate(opt *options) {
 		// Receive an AppendEntriesRPC
 	case appEntrArgs := <-(*opt).appendEntriesArgsChan:
 		// Election timeout is stopped in handleAppendEntries if necessary
-		var response = (*opt)._state.handleAppendEntries(appEntrArgs)
+		var response, signatureVerified = (*opt)._state.handleAppendEntries(appEntrArgs)
 		(*opt).appendEntriesResponseChan <- response
-		if (*response).Success {
+		if signatureVerified {
 			checkNewConfigurations(opt, appEntrArgs)
+		}
+		if len(appEntrArgs.Entries) > 0 {
+			broadcastAppendEntriesResponse(opt, response)
 		}
 	// Receive a RequestVoteRPC
 	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
@@ -567,6 +606,40 @@ func sendAppendEntriesRPCs(opt *options) {
 	})
 }
 
+func appendEntriesResponseAction(opt *options, resp *AppendEntriesResponse, appendEntriesTimeout time.Duration, id interface{}, connection interface{}, unvoting bool) bool {
+	var response bool
+	var raftConn = connection.(RaftConnection)
+	appendEntriesCall := raftConn.Connection.Go("RaftListener.AppendEntriesResponseRPC", resp, &response, nil)
+
+	go func(opt *options, appendEntriesCall *rpc.Call, id ServerID) {
+		select {
+		case <-appendEntriesCall.Done:
+		case <-time.After(time.Millisecond * appendEntriesTimeout):
+			log.Warning("AppendEntriesResponseRPC: Did not receive response from: " + string(id))
+		}
+	}(opt, appendEntriesCall, id.(ServerID))
+
+	return true
+}
+
+func broadcastAppendEntriesResponse(opt *options, resp *AppendEntriesResponse) {
+	const appendEntriesTimeout time.Duration = 200
+	(*(*opt).connections).Range(func(id interface{}, connection interface{}) bool {
+		if id.(ServerID) == (*opt)._state.getID() {
+			return true
+		}
+
+		return appendEntriesResponseAction(opt, resp, appendEntriesTimeout, id, connection, false)
+	})
+	(*(*opt).unvotingConnections).Range(func(id interface{}, connection interface{}) bool {
+		if id.(ServerID) == (*opt)._state.getID() {
+			return true
+		}
+
+		return appendEntriesResponseAction(opt, resp, appendEntriesTimeout, id, connection, true)
+	})
+}
+
 func sendInstallSnapshotRPC(opt *options, unvoting bool, id ServerID) {
 	const installSnapshotTimeout time.Duration = 200
 	var installSnapshotResponse InstallSnapshotResponse
@@ -605,7 +678,7 @@ func sendInstallSnapshotRPC(opt *options, unvoting bool, id ServerID) {
 }
 
 func handleResponseToMessage(opt *options, chanApplied chan bool, chanResponse chan *ActionResponse) {
-	const handleResponseTimeout = 500
+	const handleResponseTimeout = 1000
 	select {
 	case <-chanApplied:
 		chanResponse <- &ActionResponse{true, (*opt)._state.getCurrentLeader()}
@@ -684,10 +757,13 @@ func handleLeader(opt *options) {
 		(*opt).connected = true
 	// Receive an AppendEntriesRPC
 	case appEntrArgs := <-(*opt).appendEntriesArgsChan:
-		var response = (*opt)._state.handleAppendEntries(appEntrArgs)
+		var response, signatureVerified = (*opt)._state.handleAppendEntries(appEntrArgs)
 		(*opt).appendEntriesResponseChan <- response
-		if (*response).Success {
+		if signatureVerified {
 			checkNewConfigurations(opt, appEntrArgs)
+		}
+		if len(appEntrArgs.Entries) > 0 {
+			broadcastAppendEntriesResponse(opt, response)
 		}
 	// Receive a RequestVoteRPC
 	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
@@ -699,7 +775,7 @@ func handleLeader(opt *options) {
 		sendAppendEntriesRPCs(opt)
 	}
 	// Check if leader should store new commits
-	(*opt)._state.checkCommits()
+	// (*opt)._state.checkCommits()
 }
 
 func applyLog(opt *options, raftLog RaftLog) {
@@ -743,8 +819,11 @@ func run(opt *options) {
 	go handleClientMessages(opt)
 	go handleAppendEntriesRPCResponses(opt)
 	go handleInstallSnapshotResponses(opt)
+	go handleOtherAppendEntriesResponse(opt)
+	go handleUpdateLeaderMessages(opt)
 	for {
 		// First check if there are logs to apply to the state machine
+		(*opt)._state.updateCommitIndex()
 		checkLogsToApply(opt)
 		switch (*opt)._state.getState() {
 		case Follower:

@@ -1,11 +1,10 @@
 package raft
 
 import (
-	"bytes"
+	"crypto"
+	"crypto/rsa"
 	"crypto/sha256"
-	"encoding/binary"
 	"fmt"
-	"math"
 	"math/rand"
 	"sync"
 	"time"
@@ -80,48 +79,42 @@ type ServerID string
 // StateImpl are structures containing the state for all servers
 type stateImpl struct {
 	// TODO maybe we could aggregate all the server map into a map[ServerID]struct{...}
-	id                      ServerID
-	electionTimeoutStarted  bool
-	electionTimer           *time.Timer
-	currentElectionVotesNew int
-	currentElectionVotesOld int
-	lastSentLogIndex        map[ServerID]int
-	currentLeader           ServerID
-	currentTerm             int
-	votedFor                ServerID
-	logs                    [logArrayCapacity]RaftLog
-	logHashes               [logArrayCapacity][32]byte
-	nextLogArrayIdx         int
-	lastSnapshot            *snapshot
-	currentState            instanceState
-	commitIndex             int
-	lastApplied             int
-	nextIndex               map[ServerID]int
-	matchIndex              map[ServerID]int
-	serverConfiguration     map[ServerID][2]bool
-	clientState             map[ServerID]clientStateStruct
-	newServerCount          int
-	oldServerCount          int
-	newServerResponseChan   map[ServerID]chan bool
-	lock                    *sync.Mutex
-	snapshotRequestChan     chan bool
-	snapshotResponseChan    chan []byte
-}
-
-func getRaftLogBytes(rl RaftLog) []byte {
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.LittleEndian, rl.Idx)
-	binary.Write(buf, binary.LittleEndian, rl.Term)
-	binary.Write(buf, binary.LittleEndian, rl.Type)
-	binary.Write(buf, binary.LittleEndian, rl.Log.Id)
-	binary.Write(buf, binary.LittleEndian, rl.Log.ActionId)
-	binary.Write(buf, binary.LittleEndian, rl.Log.Type)
-	binary.Write(buf, binary.LittleEndian, rl.Log.Action)
-	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.Id)
-	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.ConnMap)
-	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.OldCount)
-	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.NewCount)
-	return buf.Bytes()
+	id                        ServerID
+	electionTimeoutStarted    bool
+	electionTimer             *time.Timer
+	currentElectionVotesNew   int
+	currentElectionVotesOld   int
+	lastSentLogIndex          map[ServerID]int
+	currentLeader             ServerID
+	currentTerm               int
+	currentIgnoreTerm         int
+	acceptAppendEntries       bool
+	votedFor                  ServerID
+	logs                      [logArrayCapacity]RaftLog
+	logHashes                 [logArrayCapacity][32]byte
+	nextLogArrayIdx           int
+	lastSnapshot              *snapshot
+	currentState              instanceState
+	commitIndex               int
+	lastApplied               int
+	nextIndex                 map[ServerID]int
+	matchIndex                map[ServerID]int
+	serverConfiguration       map[ServerID][2]bool
+	clientState               map[ServerID]clientStateStruct
+	newServerCount            int
+	oldServerCount            int
+	newServerResponseChan     map[ServerID]chan bool
+	lock                      *sync.Mutex
+	snapshotRequestChan       chan bool
+	snapshotResponseChan      chan []byte
+	nodeKeys                  map[ServerID]*rsa.PublicKey
+	clientKeys                map[string]*rsa.PublicKey
+	privateKey                *rsa.PrivateKey
+	bannedServers             []ServerID
+	currentVotesNew           map[ServerID]RequestVoteResponse
+	currentVotesOld           map[ServerID]RequestVoteResponse
+	appendEntriesSituationOld map[ServerID]int
+	appendEntriesSituationNew map[ServerID]int
 }
 
 func raftLogToString(log RaftLog) string {
@@ -142,7 +135,7 @@ func newConfigurationRaftLog(idx int, term int, cfgLog ConfigurationLog) RaftLog
 }
 
 // NewState returns an empty state, only used once at the beginning
-func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, snapshotResponseChan chan []byte) *stateImpl {
+func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, snapshotResponseChan chan []byte, nodeKeys map[ServerID]*rsa.PublicKey, clientKeys map[string]*rsa.PublicKey, privateKey *rsa.PrivateKey) *stateImpl {
 	var lastSentLogIndex = make(map[ServerID]int)
 	var nextIndex = make(map[ServerID]int)
 	var matchIndex = make(map[ServerID]int)
@@ -159,6 +152,8 @@ func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, 
 		lastSentLogIndex,
 		"",
 		0,
+		-1,
+		false,
 		"",
 		[logArrayCapacity]RaftLog{},
 		[logArrayCapacity][32]byte{},
@@ -166,7 +161,7 @@ func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, 
 		nil,
 		Follower,
 		-1,
-		0,
+		-1,
 		nextIndex,
 		matchIndex,
 		serverConfiguration,
@@ -176,7 +171,15 @@ func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, 
 		newServerResponseChan,
 		lock,
 		snapshotRequestChan,
-		snapshotResponseChan}
+		snapshotResponseChan,
+		nodeKeys,
+		clientKeys,
+		privateKey,
+		[]ServerID{},
+		make(map[ServerID]RequestVoteResponse),
+		make(map[ServerID]RequestVoteResponse),
+		make(map[ServerID]int),
+		make(map[ServerID]int)}
 	return &state
 }
 
@@ -195,7 +198,7 @@ type state interface {
 	handleAppendEntriesResponse(*AppendEntriesResponse) (int, bool)
 	addNewGameLog(GameLog) bool
 	addNewConfigurationLog(ConfigurationLog) bool
-	handleAppendEntries(*AppendEntriesArgs) *AppendEntriesResponse
+	handleAppendEntries(*AppendEntriesArgs) (*AppendEntriesResponse, bool)
 	updateLastApplied() int
 	getLog(int) RaftLog
 	checkCommits()
@@ -213,6 +216,25 @@ type state interface {
 	handleInstallSnapshotRequest(*InstallSnapshotArgs) *InstallSnapshotResponse
 	updateClientLastActionApplied(ServerID, int64)
 	getClientLastActionApplied(ServerID) int64
+	isBanned(ServerID) bool
+	updateAppendEntriesResponseSituation(*AppendEntriesResponse, bool, bool)
+	updateCommitIndex()
+	ignoreHeartbeatsForThisTerm()
+	shouldIgnoreHeartbeats() bool
+}
+
+func (_state *stateImpl) isBanned(sid ServerID) bool {
+	for _, id := range _state.bannedServers {
+		if id == sid {
+			return true
+		}
+	}
+	return false
+}
+
+func (_state *stateImpl) banServer(sid ServerID) {
+	log.Info("Ban server: ", sid)
+	_state.bannedServers = append(_state.bannedServers, sid)
 }
 
 /* To start a new election a server:
@@ -228,11 +250,15 @@ func (_state *stateImpl) startElection() {
 	// TODO verify that this is correct
 	_state.currentElectionVotesNew = 1
 	_state.currentElectionVotesOld = 1
+	_state.currentVotesNew = make(map[ServerID]RequestVoteResponse)
+	_state.currentVotesOld = make(map[ServerID]RequestVoteResponse)
 }
 
 func (_state *stateImpl) prepareRequestVoteRPC() *RequestVoteArgs {
 	var lastLogIdx, lastLogTerm = _state.getLastLogIdxTerm()
-	return &RequestVoteArgs{_state.currentTerm, _state.id, lastLogIdx, lastLogTerm}
+	var rva = RequestVoteArgs{_state.currentTerm, _state.id, lastLogIdx, lastLogTerm, []byte{}}
+	rva.Signature = getRequestVoteArgsSignature(_state.privateKey, &rva)
+	return &rva
 }
 
 func (_state *stateImpl) getState() instanceState {
@@ -261,30 +287,48 @@ func (_state *stateImpl) stopElectionTimeout() {
 	_state.electionTimeoutStarted = false
 }
 
+// TODO increase term if higher
 func (_state *stateImpl) handleRequestToVote(rva *RequestVoteArgs) *RequestVoteResponse {
+	var hashed = getRequestVoteArgsBytes(rva)
+	err := rsa.VerifyPKCS1v15((_state.nodeKeys[(*rva).CandidateID]), crypto.SHA256, hashed[:], (*rva).Signature)
+	if err != nil {
+		var rvr = RequestVoteResponse{_state.id, _state.currentTerm, false, []byte{}}
+		rvr.Signature = getRequestVoteResponseSignature(_state.privateKey, &rvr)
+		return &rvr
+	}
 	var lastLogIdx, lastLogTerm = _state.getLastLogIdxTerm()
 	if _state.currentTerm > (*rva).Term {
-		return &RequestVoteResponse{_state.id, _state.currentTerm, false}
+		var rvr = RequestVoteResponse{_state.id, _state.currentTerm, false, []byte{}}
+		rvr.Signature = getRequestVoteResponseSignature(_state.privateKey, &rvr)
+		return &rvr
 	} else if (*rva).Term == _state.currentTerm && (_state.votedFor == "" || _state.votedFor == (*rva).CandidateID) && (*rva).LastLogTerm >= lastLogTerm && (*rva).LastLogIndex >= lastLogIdx {
 		_state.stopElectionTimeout()
 		log.Info("Become Follower")
+		_state.acceptAppendEntries = false
 		_state.currentState = Follower
 		_state.currentTerm = (*rva).Term
 		_state.votedFor = (*rva).CandidateID
 		_state.currentLeader = (*rva).CandidateID
-		return &RequestVoteResponse{_state.id, _state.currentTerm, true}
+		var rvr = RequestVoteResponse{_state.id, _state.currentTerm, true, []byte{}}
+		rvr.Signature = getRequestVoteResponseSignature(_state.privateKey, &rvr)
+		return &rvr
 	} else if (*rva).Term > _state.currentTerm {
 		// Our term is out of date, become follower
 		_state.stopElectionTimeout()
 		log.Info("Become Follower")
+		_state.acceptAppendEntries = false
 		_state.currentState = Follower
 		_state.currentTerm = (*rva).Term
 		_state.votedFor = (*rva).CandidateID
 		_state.currentLeader = (*rva).CandidateID
-		return &RequestVoteResponse{_state.id, _state.currentTerm, true}
+		var rvr = RequestVoteResponse{_state.id, _state.currentTerm, true, []byte{}}
+		rvr.Signature = getRequestVoteResponseSignature(_state.privateKey, &rvr)
+		return &rvr
 	}
 
-	return &RequestVoteResponse{_state.id, _state.currentTerm, false}
+	var rvr = RequestVoteResponse{_state.id, _state.currentTerm, false, []byte{}}
+	rvr.Signature = getRequestVoteResponseSignature(_state.privateKey, &rvr)
+	return &rvr
 }
 
 func (_state *stateImpl) getElectionTimer() *time.Timer {
@@ -293,6 +337,12 @@ func (_state *stateImpl) getElectionTimer() *time.Timer {
 
 func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new bool) bool {
 	_state.lock.Lock()
+	var hashed = getRequestVoteResponseBytes(resp)
+	err := rsa.VerifyPKCS1v15((_state.nodeKeys[(*resp).Id]), crypto.SHA256, hashed[:], (*resp).Signature)
+	if err != nil {
+		_state.lock.Unlock()
+		return false
+	}
 	// If the node's current state is stale immediately revert to Follower state
 	if (*resp).Term > (_state.currentTerm) {
 		_state.stopElectionTimeout()
@@ -300,15 +350,18 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new
 		_state.currentElectionVotesOld = 0
 		_state.currentTerm = (*resp).Term
 		log.Info("Become Follower")
+		_state.acceptAppendEntries = false
 		_state.currentState = Follower
 		_state.lock.Unlock()
 		return false
 		// Only accept votes for the current term
 	} else if (*resp).Term == (_state.currentTerm) && (*resp).VoteGranted == true {
 		if old {
+			_state.currentVotesOld[(*resp).Id] = *resp
 			_state.currentElectionVotesOld++
 		}
 		if new {
+			_state.currentVotesNew[(*resp).Id] = *resp
 			_state.currentElectionVotesNew++
 		}
 
@@ -336,14 +389,20 @@ func (_state *stateImpl) winElection() {
 	_state.lastSentLogIndex[_state.id] = -1
 }
 
-func (_state *stateImpl) prepareAppendEntriesArgs(lastLogIdx int, lastLogTerm int, logsToSend []RaftLog) *AppendEntriesArgs {
-	return &AppendEntriesArgs{
+func (_state *stateImpl) prepareAppendEntriesArgs(lastLogIdx int, lastLogTerm int, lastLogHash [32]byte, logsToSend []RaftLog) *AppendEntriesArgs {
+	var aea = AppendEntriesArgs{
 		_state.currentTerm,
 		_state.id,
 		lastLogIdx,
 		lastLogTerm,
+		lastLogHash,
 		logsToSend,
-		_state.commitIndex}
+		_state.commitIndex,
+		_state.currentVotesNew,
+		_state.currentVotesOld,
+		[]byte{}}
+	aea.Signature = getAppendEntriesArgsSignature(_state.privateKey, &aea)
+	return &aea
 }
 
 func (_state *stateImpl) getLastLogIdxTerm() (int, int) {
@@ -370,6 +429,29 @@ func (_state *stateImpl) findArrayIndexByLogIndex(idx int) (bool, int) {
 	return found, result
 }
 
+func (_state *stateImpl) findArrayIndexByHash(hash [32]byte) (bool, int) {
+	var found = false
+	var result = -1
+	for i := _state.nextLogArrayIdx - 1; i >= 0 && !found; i-- {
+		if _state.logHashes[i] == hash {
+			found = true
+			result = i
+		}
+	}
+
+	return found, result
+}
+
+func (_state *stateImpl) getLogHashFromIdx(idx int) (bool, [32]byte) {
+	var found, arrIdx = _state.findArrayIndexByLogIndex(idx)
+	if !found && _state.lastSnapshot != nil {
+		return true, _state.lastSnapshot.hash
+	} else if found {
+		return true, _state.logHashes[arrIdx]
+	}
+	return false, [32]byte{}
+}
+
 func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
 	_state.lock.Lock()
 	var myLastLogIdx, myLastLogTerm = _state.getLastLogIdxTerm()
@@ -387,6 +469,7 @@ func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
 	}
 	var lastLogIdx = -1
 	var lastLogTerm = -1
+	var lastLogHash = [32]byte{}
 	if arrayLogIdx < 0 {
 		lastLogIdx = myLastLogIdx
 		lastLogTerm = myLastLogTerm
@@ -405,8 +488,9 @@ func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
 	} else {
 		_state.lastSentLogIndex[id] = serverNextIdx - 1
 	}
+	_, lastLogHash = _state.getLogHashFromIdx(lastLogIdx)
 	_state.lock.Unlock()
-	return _state.prepareAppendEntriesArgs(lastLogIdx, lastLogTerm, logsToSend)
+	return _state.prepareAppendEntriesArgs(lastLogIdx, lastLogTerm, lastLogHash, logsToSend)
 }
 
 func (_state *stateImpl) getLogHash(raftLog RaftLog) [32]byte {
@@ -441,6 +525,14 @@ func (_state *stateImpl) addNewGameLog(msg GameLog) bool {
 	_state.matchIndex[_state.id] = newLog.Idx
 	_state.lastSentLogIndex[_state.id] = newLog.Idx
 	_state.nextIndex[_state.id] = newLog.Idx + 1
+
+	var configuration = _state.serverConfiguration[_state.id]
+	if configuration[0] && newLog.Idx > _state.appendEntriesSituationOld[_state.id] {
+		_state.appendEntriesSituationOld[_state.id] = newLog.Idx
+	}
+	if configuration[1] && newLog.Idx > _state.appendEntriesSituationNew[_state.id] {
+		_state.appendEntriesSituationNew[_state.id] = newLog.Idx
+	}
 	_state.lock.Unlock()
 	return true
 }
@@ -463,11 +555,70 @@ func (_state *stateImpl) addNewConfigurationLog(conf ConfigurationLog) bool {
 	_state.matchIndex[_state.id] = newLog.Idx
 	_state.lastSentLogIndex[_state.id] = newLog.Idx
 	_state.nextIndex[_state.id] = newLog.Idx + 1
+
+	var configuration = _state.serverConfiguration[_state.id]
+	if configuration[0] && newLog.Idx > _state.appendEntriesSituationOld[_state.id] {
+		_state.appendEntriesSituationOld[_state.id] = newLog.Idx
+	}
+	if configuration[1] && newLog.Idx > _state.appendEntriesSituationNew[_state.id] {
+		_state.appendEntriesSituationNew[_state.id] = newLog.Idx
+	}
+
 	_state.lock.Unlock()
 	return true
 }
 
-func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntriesResponse {
+func (_state *stateImpl) verifyAppendEntriesQuorum(aea *AppendEntriesArgs) bool {
+	var votesOld = 1
+	var votesNew = 1
+	for id, val := range (*aea).CurrentVotesOld {
+		var hashed = getRequestVoteResponseBytes(&val)
+		err := rsa.VerifyPKCS1v15((_state.nodeKeys[id]), crypto.SHA256, hashed[:], val.Signature)
+		if err != nil {
+			return false
+		}
+		if val.VoteGranted {
+			votesOld++
+		}
+	}
+	for id, val := range (*aea).CurrentVotesNew {
+		var hashed = getRequestVoteResponseBytes(&val)
+		err := rsa.VerifyPKCS1v15((_state.nodeKeys[id]), crypto.SHA256, hashed[:], val.Signature)
+		if err != nil {
+			return false
+		}
+		if val.VoteGranted {
+			votesNew++
+		}
+	}
+	log.Info("Verify append entries quorum ", votesOld, "/", _state.oldServerCount, " ", votesNew, "/", _state.newServerCount)
+	return _state.checkMajority(votesNew, votesOld)
+}
+
+func (_state *stateImpl) updateQuorum(sid ServerID, aea *AppendEntriesArgs) {
+	if len((*aea).Entries) > 0 {
+		var lastLog = (*aea).Entries[len((*aea).Entries)-1]
+		var configuration = _state.serverConfiguration[sid]
+		if configuration[0] && lastLog.Idx > _state.appendEntriesSituationOld[sid] {
+			_state.appendEntriesSituationOld[sid] = lastLog.Idx
+		}
+		if configuration[1] && lastLog.Idx > _state.appendEntriesSituationNew[sid] {
+			_state.appendEntriesSituationNew[sid] = lastLog.Idx
+		}
+	}
+}
+
+// TODO: increase term if term is higher and the aea contains a quorum
+func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEntriesResponse, bool) {
+	_state.lock.Lock()
+	var hashed = getAppendEntriesArgsBytes(aea)
+	err := rsa.VerifyPKCS1v15((_state.nodeKeys[(*aea).LeaderID]), crypto.SHA256, hashed[:], (*aea).Signature)
+	if err != nil {
+		var aer = AppendEntriesResponse{_state.id, -1, false, -1, []byte{}}
+		aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
+		_state.lock.Unlock()
+		return &aer, false
+	}
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
 	// Handle Candidate and Leader mode particular conditions
 	if _state.currentState != Follower {
@@ -475,33 +626,59 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 			// If AppendEntries RPC received from new leader: convert to follower
 			_state.stopElectionTimeout()
 			log.Info("Become Follower")
+			_state.acceptAppendEntries = false
 			_state.currentState = Follower
 			_state.currentTerm = (*aea).Term
 			// _state.currentLeader = (*aea).LeaderID
 		} else {
-			return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
+			var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, []byte{}}
+			aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
+			_state.lock.Unlock()
+			return &aer, true
+		}
+	}
+
+	if !_state.acceptAppendEntries && (*aea).Term > 1 {
+		var quorum = _state.verifyAppendEntriesQuorum(aea)
+		log.Info("AppendEntries quorum verified: ", quorum)
+		if quorum {
+			_state.acceptAppendEntries = true
+		} else {
+			var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, []byte{}}
+			aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
+			_state.lock.Unlock()
+			return &aer, true
 		}
 	}
 
 	// 1. Reply false if rpc term < currentTerm
 	if (*aea).Term < _state.currentTerm {
-		return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
+		var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, []byte{}}
+		aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
+		_state.lock.Unlock()
+		return &aer, true
 	}
 
 	var prevLogIdx = -1
 	var found = false
-	if (*aea).PrevLogIndex >= 0 {
+	if (*aea).PrevLogHash != [32]byte{} {
 		// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
-		found, prevLogIdx = _state.findArrayIndexByLogIndex((*aea).PrevLogIndex)
+		found, prevLogIdx = _state.findArrayIndexByHash((*aea).PrevLogHash)
 		if !found {
 			// If we didn't find the previous log index it may be included in the last snapshot
 			// so we check if there exists a last snapshot and if it includes the previous log index
 			if _state.lastSnapshot == nil || (*_state.lastSnapshot).lastIncludedIndex < (*aea).PrevLogIndex {
-				return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
+				var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, []byte{}}
+				aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
+				_state.lock.Unlock()
+				return &aer, true
 			}
 		} else {
 			if _state.logs[prevLogIdx].Term != (*aea).PrevLogTerm {
-				return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
+				var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, []byte{}}
+				aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
+				_state.lock.Unlock()
+				return &aer, true
 			}
 		}
 	}
@@ -519,13 +696,19 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 	// Check if the node has enough log space for all the logs of the AppendEntriesRPC
 	if startNextIdx+len((*aea).Entries) >= logArrayCapacity {
 		if !_state.takeSnapshot() {
-			return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
+			var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, []byte{}}
+			aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
+			_state.lock.Unlock()
+			return &aer, true
 		}
 	}
-	_, prevLogIdx = _state.findArrayIndexByLogIndex((*aea).PrevLogIndex)
+	_, prevLogIdx = _state.findArrayIndexByHash((*aea).PrevLogHash)
 	startNextIdx = prevLogIdx + 1
 	if startNextIdx+len((*aea).Entries) >= logArrayCapacity {
-		return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
+		var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, []byte{}}
+		aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
+		_state.lock.Unlock()
+		return &aer, true
 	}
 
 	// At this point we should be confident that we have enough space for the logs
@@ -548,24 +731,27 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 			// Otherwise we should be confident that the logs are the same and need not be replaced
 		}
 	}
-	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-	if (*aea).LeaderCommit > _state.commitIndex {
-		if len((*aea).Entries) > 0 {
-			var lastLog = (*aea).Entries[len((*aea).Entries)-1]
-			_state.commitIndex = int(math.Min(float64((*aea).LeaderCommit), float64(lastLog.Idx)))
-		} else {
-			_state.commitIndex = (*aea).LeaderCommit
-		}
-	}
 
-	return &AppendEntriesResponse{_state.id, _state.currentTerm, true, lastLogIdx}
+	_state.updateQuorum(_state.id, aea)
+	_state.updateQuorum((*aea).LeaderID, aea)
+	var aer = AppendEntriesResponse{_state.id, _state.currentTerm, true, lastLogIdx, []byte{}}
+	aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
+	_state.lock.Unlock()
+	return &aer, true
 }
 
 func (_state *stateImpl) handleAppendEntriesResponse(aer *AppendEntriesResponse) (int, bool) {
 	_state.lock.Lock()
+	var hashed = getAppendEntriesResponseBytes(aer)
+	err := rsa.VerifyPKCS1v15((_state.nodeKeys[(*aer).Id]), crypto.SHA256, hashed[:], (*aer).Signature)
+	if err != nil {
+		_state.lock.Unlock()
+		return -1, false
+	}
 	if !(*aer).Success {
 		if (*aer).Term > _state.currentTerm {
 			log.Info("Become Follower")
+			_state.acceptAppendEntries = false
 			_state.currentState = Follower
 			_state.currentTerm = (*aer).Term
 			// _state.currentLeader = (*aer).Id
@@ -586,6 +772,13 @@ func (_state *stateImpl) handleAppendEntriesResponse(aer *AppendEntriesResponse)
 	}
 	_state.nextIndex[(*aer).Id] = _state.lastSentLogIndex[(*aer).Id] + 1
 	_state.matchIndex[(*aer).Id] = _state.lastSentLogIndex[(*aer).Id]
+	var configuration = _state.serverConfiguration[(*aer).Id]
+	if configuration[0] && _state.lastSentLogIndex[(*aer).Id] > _state.appendEntriesSituationOld[(*aer).Id] {
+		_state.appendEntriesSituationOld[(*aer).Id] = _state.lastSentLogIndex[(*aer).Id]
+	}
+	if configuration[1] && _state.lastSentLogIndex[(*aer).Id] > _state.appendEntriesSituationNew[(*aer).Id] {
+		_state.appendEntriesSituationNew[(*aer).Id] = _state.lastSentLogIndex[(*aer).Id]
+	}
 	_state.lock.Unlock()
 	return _state.matchIndex[(*aer).Id], false
 }
@@ -596,7 +789,7 @@ func (_state *stateImpl) updateLastApplied() int {
 		if logIdx >= 0 {
 			_state.lastApplied++
 		}
-		log.Trace("State: update last applied (log: ", _state.lastApplied, ", arr: ", logIdx, ", commit: ", _state.commitIndex, ")")
+		log.Info("State: update last applied (log: ", _state.lastApplied, ", arr: ", logIdx, ", commit: ", _state.commitIndex, ")")
 		return logIdx
 	}
 	return -1
@@ -670,6 +863,8 @@ func (_state *stateImpl) addNewServer(sid ServerID) {
 		_state.lastSentLogIndex[sid] = 0
 		_state.nextIndex[sid] = 0
 		_state.matchIndex[sid] = 0
+		_state.appendEntriesSituationNew[sid] = -1
+		_state.appendEntriesSituationOld[sid] = -1
 	}
 	_state.lock.Unlock()
 }
@@ -768,15 +963,24 @@ func (_state *stateImpl) prepareInstallSnapshotRPC() *InstallSnapshotArgs {
 		lastSnapshot.serverConfiguration,
 		lastSnapshot.oldServerCount,
 		lastSnapshot.newServerCount,
-		lastSnapshot.hash}
+		lastSnapshot.hash,
+		[]byte{}}
+	newInstallSnapshotArgs.Signature = getInstallSnapshotArgsSignature(_state.privateKey, &newInstallSnapshotArgs)
 	return &newInstallSnapshotArgs
 }
 
 func (_state *stateImpl) handleInstallSnapshotResponse(isr *InstallSnapshotResponse) int {
 	_state.lock.Lock()
+	var hashed = getInstallSnapshotResponseBytes(isr)
+	err := rsa.VerifyPKCS1v15((_state.nodeKeys[(*isr).Id]), crypto.SHA256, hashed[:], (*isr).Signature)
+	if err != nil {
+		_state.lock.Unlock()
+		return -1
+	}
 	if !(*isr).Success {
 		if (*isr).Term >= _state.currentTerm {
 			log.Info("Become Follower")
+			_state.acceptAppendEntries = false
 			_state.currentState = Follower
 			_state.currentTerm = (*isr).Term
 			// _state.currentLeader = (*isr).Id
@@ -803,8 +1007,17 @@ func (_state *stateImpl) checkIfSnapshotShouldBeInstalled(isa *InstallSnapshotAr
 
 func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) *InstallSnapshotResponse {
 	log.Trace("Received install snapshot request")
+	var hashed = getInstallSnapshotArgsBytes(isa)
+	err := rsa.VerifyPKCS1v15((_state.nodeKeys[(*isa).Id]), crypto.SHA256, hashed[:], (*isa).Signature)
+	if err != nil {
+		var isr = InstallSnapshotResponse{_state.id, _state.currentTerm, false, -1, -1, []byte{}}
+		isr.Signature = getInstallSnapshotResponseSignature(_state.privateKey, &isr)
+		return &isr
+	}
 	if !_state.checkIfSnapshotShouldBeInstalled(isa) {
-		return &InstallSnapshotResponse{_state.id, _state.currentTerm, false, -1, -1}
+		var isr = InstallSnapshotResponse{_state.id, _state.currentTerm, false, -1, -1, []byte{}}
+		isr.Signature = getInstallSnapshotResponseSignature(_state.privateKey, &isr)
+		return &isr
 	}
 
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
@@ -829,7 +1042,9 @@ func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) 
 	_state.lastApplied = (*isa).LastIncludedIndex
 
 	log.Trace("State: install snapshot ", (*isa).LastIncludedIndex)
-	return &InstallSnapshotResponse{_state.id, _state.currentTerm, true, (*isa).LastIncludedIndex, (*isa).LastIncludedTerm}
+	var isr = InstallSnapshotResponse{_state.id, _state.currentTerm, true, (*isa).LastIncludedIndex, (*isa).LastIncludedTerm, []byte{}}
+	isr.Signature = getInstallSnapshotResponseSignature(_state.privateKey, &isr)
+	return &isr
 }
 
 func (_state *stateImpl) getClientLastActionApplied(sid ServerID) int64 {
@@ -845,4 +1060,74 @@ func (_state *stateImpl) updateClientLastActionApplied(sid ServerID, idx int64) 
 	previousState.lastActionApplied = idx
 	_state.clientState[sid] = previousState
 	_state.lock.Unlock()
+}
+
+func findQuorum(values map[ServerID]int) int {
+	votes := make(map[int]int)
+	for _, val := range values {
+		if _, found := votes[val]; !found {
+			votes[val] = 1
+		} else {
+			votes[val]++
+		}
+	}
+	var result = -1
+	for idx, val := range votes {
+		if val > len(values)/2 && idx > result {
+			result = idx
+		}
+	}
+
+	return result
+}
+
+func (_state *stateImpl) updateCommitIndex() {
+	_state.lock.Lock()
+	var oldQuorum = findQuorum(_state.appendEntriesSituationOld)
+	var newQuorum = findQuorum(_state.appendEntriesSituationNew)
+	if oldQuorum >= 0 && oldQuorum > _state.commitIndex {
+		_state.commitIndex = oldQuorum
+		log.Info(">>> Update commit index: ", _state.commitIndex)
+	}
+	if newQuorum >= 0 && newQuorum > _state.commitIndex {
+		_state.commitIndex = newQuorum
+		log.Info(">>> Update commit index: ", _state.commitIndex)
+	}
+
+	_state.lock.Unlock()
+}
+
+func (_state *stateImpl) updateAppendEntriesResponseSituation(aer *AppendEntriesResponse, old bool, new bool) {
+	_state.lock.Lock()
+	log.Info("Update append entries response situation ", (*aer).Id, " ", (*aer).LastIndex)
+	var hashed = getAppendEntriesResponseBytes(aer)
+	err := rsa.VerifyPKCS1v15((_state.nodeKeys[(*aer).Id]), crypto.SHA256, hashed[:], (*aer).Signature)
+	if err != nil {
+		_state.lock.Unlock()
+		return
+	}
+
+	if old {
+		if (*aer).LastIndex > _state.appendEntriesSituationOld[(*aer).Id] {
+			_state.appendEntriesSituationOld[(*aer).Id] = (*aer).LastIndex
+		}
+	}
+	if new {
+		if (*aer).LastIndex > _state.appendEntriesSituationNew[(*aer).Id] {
+			_state.appendEntriesSituationNew[(*aer).Id] = (*aer).LastIndex
+		}
+	}
+
+	_state.lock.Unlock()
+	return
+}
+
+func (_state *stateImpl) ignoreHeartbeatsForThisTerm() {
+	_state.lock.Lock()
+	_state.currentIgnoreTerm = _state.currentTerm
+	_state.lock.Unlock()
+}
+
+func (_state *stateImpl) shouldIgnoreHeartbeats() bool {
+	return _state.currentIgnoreTerm == _state.currentTerm
 }
