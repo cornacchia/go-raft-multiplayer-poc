@@ -1,14 +1,21 @@
 package main
 
 import (
+	"crypto"
+	rng "crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"go_raft/raft"
 	"go_wanderer/engine"
 	"go_wanderer/ui"
+	"io/ioutil"
 	"math/rand"
 	"net/rpc"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -27,12 +34,29 @@ type options struct {
 	requestConnectionChan  chan raft.RequestConnection
 	requestNewServerIDChan chan bool
 	getNewServerIDChan     chan raft.ServerID
+	clientPrivateKey       *rsa.PrivateKey
 }
 
 func checkError(err error) {
 	if err != nil {
 		log.Error("Error: ", err)
 	}
+}
+
+func getActionArgsSignature(privKey *rsa.PrivateKey, aa *raft.ActionArgs) []byte {
+	hashed := raft.GetActionArgsBytes(aa)
+	signature, err := rsa.SignPKCS1v15(rng.Reader, privKey, crypto.SHA256, hashed[:])
+	checkError(err)
+
+	return signature
+}
+
+func getUpdateLeaderSignature(privKey *rsa.PrivateKey, ua *raft.UpdateLeaderArgs) []byte {
+	hashed := raft.GetUpdateLeaderArgsBytes(ua)
+	signature, err := rsa.SignPKCS1v15(rng.Reader, privKey, crypto.SHA256, hashed[:])
+	checkError(err)
+
+	return signature
 }
 
 func getNowMs() int64 {
@@ -80,8 +104,33 @@ func handleCurrentTurn(currentTurnEngineChan chan int, currentTurnUIChan chan in
 	}
 }
 
+func broadcastUpdateLeaderRPC(opt *options, updateLeaderArgs *raft.UpdateLeaderArgs, changeConnectionChan chan raft.ServerID) {
+	(*(*opt).connections).Range(func(id interface{}, connection interface{}) bool {
+		if id.(raft.ServerID) == (*opt).id {
+			return true
+		}
+
+		var raftConn = connection.(raft.RaftConnection)
+		var response raft.UpdateLeaderResponse
+		actionCall := raftConn.Connection.Go("RaftListener.UpdateLeaderRPC", updateLeaderArgs, &response, nil)
+		go func(opt *options, actionCall *rpc.Call, id raft.ServerID) {
+			select {
+			case <-actionCall.Done:
+				if !response.Success && response.LeaderID != "" {
+					changeConnectionChan <- response.LeaderID
+				}
+			case <-time.After(time.Millisecond * 500):
+				log.Warning("UpdateLeaderRPC: Did not receive response from: " + string(id))
+				(*opt).requestConnectionChan <- raft.RequestConnection{id, [2]bool{false, true}, (*opt).connections}
+			}
+		}(opt, actionCall, id.(raft.ServerID))
+
+		return true
+	})
+}
+
 func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, changeConnectionChan chan raft.ServerID, msg engine.GameLog, timestamp int64, currentConnection raft.ServerID, opt *options) {
-	var waitTime time.Duration = 1000
+	var waitTime time.Duration = 5000
 	if msg.Action.Action == engine.CONNECT {
 		waitTime = 5000
 	}
@@ -119,7 +168,10 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, changeC
 		} else if msg.Action.Action != engine.DISCONNECT && (*opt).mode == "Test" {
 			log.Info("Main - Action dropped - ", currentConnection, " - ", msg)
 		}
-		changeConnectionChan <- ""
+		var updateLeaderArgs = raft.UpdateLeaderArgs{string(msg.Id), raft.ServerID(currentConnection), []byte{}}
+		updateLeaderArgs.Signature = getUpdateLeaderSignature((*opt).clientPrivateKey, &updateLeaderArgs)
+		broadcastUpdateLeaderRPC(opt, &updateLeaderArgs, changeConnectionChan)
+		// changeConnectionChan <- ""
 		(*opt).actionChan <- msg
 	}
 }
@@ -134,7 +186,8 @@ func manageActions(opt *options) {
 			var timestamp = getNowMs()
 			var actionResponse raft.ActionResponse
 			var jsonAction, _ = json.Marshal(msg.Action)
-			var actionArgs = raft.ActionArgs{string(msg.Id), msg.ActionId, msg.Type, jsonAction}
+			var actionArgs = raft.ActionArgs{string(msg.Id), msg.ActionId, msg.Type, jsonAction, []byte{}}
+			actionArgs.Signature = getActionArgsSignature((*opt).clientPrivateKey, &actionArgs)
 			var conn, found = (*(*opt).connections).Load(currentConnection)
 			if !found {
 				(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, [2]bool{false, true}, (*opt).connections}
@@ -171,6 +224,52 @@ func handlePrematureTermination(termChan chan os.Signal, connectedChan chan bool
 	}
 }
 
+func readRSAPublicKey(fileName string) *rsa.PublicKey {
+	fileBytes, err := ioutil.ReadFile(fileName)
+	checkError(err)
+	block, _ := pem.Decode(fileBytes)
+	key, err := x509.ParsePKIXPublicKey(block.Bytes)
+	checkError(err)
+	return key.(*rsa.PublicKey)
+}
+
+func readRSAPrivateKey(fileName string) *rsa.PrivateKey {
+	fileBytes, err := ioutil.ReadFile(fileName)
+	checkError(err)
+	block, _ := pem.Decode(fileBytes)
+	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	checkError(err)
+	return key
+}
+
+// Each BFT Raft node needs: public keys for all servers, public keys for all clients, own private keys
+func readRSAKeys(id string) (map[raft.ServerID]*rsa.PublicKey, map[string]*rsa.PublicKey, *rsa.PrivateKey, *rsa.PrivateKey) {
+	nodeKeys := make(map[raft.ServerID]*rsa.PublicKey)
+	clientKeys := make(map[string]*rsa.PublicKey)
+	var privateNodeKey = readRSAPrivateKey("../keys/nodes/key_" + id + ".pem")
+	var privateClientKey = readRSAPrivateKey("../keys/clients/key_" + id + ".pem")
+
+	nodeFiles, err := ioutil.ReadDir("../keys/nodes")
+	checkError(err)
+	for _, f := range nodeFiles {
+		if strings.Contains(f.Name(), "public") {
+			var nodeID = raft.ServerID(strings.Split(strings.Split(f.Name(), ".")[0], "_")[2])
+			nodeKeys[nodeID] = readRSAPublicKey("../keys/nodes/" + f.Name())
+		}
+	}
+
+	clientFiles, err := ioutil.ReadDir("../keys/clients")
+	checkError(err)
+	for _, f := range clientFiles {
+		if strings.Contains(f.Name(), "public") {
+			var clientID = strings.Split(strings.Split(f.Name(), ".")[0], "_")[2]
+			clientKeys[clientID] = readRSAPublicKey("../keys/clients/" + f.Name())
+		}
+	}
+
+	return nodeKeys, clientKeys, privateNodeKey, privateClientKey
+}
+
 func main() {
 	// Seed random number generator
 	rand.Seed(time.Now().UnixNano())
@@ -192,6 +291,8 @@ func main() {
 	mode := args[1]
 	nodeMode := args[2]
 	port := args[3]
+
+	nodeKeys, clientKeys, nodePrivateKey, clientPrivateKey := readRSAKeys(port)
 
 	var logOutputFile *os.File
 
@@ -230,7 +331,7 @@ func main() {
 
 	stateReqChan, stateChan, actionChan = engine.Start(playerID, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan, currentTurnEngineChan)
 
-	var _ = raft.Start(nodeMode, port, otherServers, actionChan, nodeConnectedChan, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan)
+	var _ = raft.Start(nodeMode, port, otherServers, actionChan, nodeConnectedChan, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan, nodeKeys, clientKeys, nodePrivateKey)
 	var nodeConnections, _ = raft.ConnectToRaftServers(nil, raft.ServerID(port), otherServers)
 
 	var opt = options{
@@ -243,7 +344,8 @@ func main() {
 		mode,
 		requestConnectionChan,
 		requestNewServerIDChan,
-		getNewServerIDChan}
+		getNewServerIDChan,
+		clientPrivateKey}
 	go connectionPool(&opt)
 	go raft.ConnectionManager(nil, requestConnectionChan)
 	go manageActions(&opt)
