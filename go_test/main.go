@@ -259,14 +259,13 @@ func testNormal(testMode string, start int, stop int, step int, testTime int, re
 
 func killWorkers(pkgToTest string, signal syscall.Signal, killInterval int, retChan chan bool, nodesToTest map[int][]string) {
 	var currentWorkerIdx = 0
-	fmt.Print("Killing nodes: ")
+	log.Debug("Killing nodes: ")
 	for {
 		select {
 		case <-retChan:
-			fmt.Println("Stop killing nodes")
+			log.Debug("Stop killing nodes")
 			return
 		case <-time.After(time.Second * time.Duration(killInterval)):
-			fmt.Print(currentWorkerIdx, ", ")
 			killProcess(currentWorkerIdx, signal)
 			time.Sleep(time.Second * 10)
 			var val, _ = nodesToTest[currentWorkerIdx]
@@ -278,12 +277,12 @@ func killWorkers(pkgToTest string, signal syscall.Signal, killInterval int, retC
 
 func testNodesDynamic(testMode string, killInterval int, testTime int, pkgToTest string, retChan chan results, signal syscall.Signal) {
 	removeAllLogFiles()
-	fmt.Println("###################################")
-	fmt.Print("##### Dynamic test for nodes: ")
+	log.Debug("###################################")
+	log.Debug("##### Dynamic test for nodes: ")
 	if signal == syscall.SIGTERM {
-		fmt.Println("SIGTERM")
+		log.Debug("SIGTERM")
 	} else {
-		fmt.Println("SIGKILL")
+		log.Debug("SIGKILL")
 	}
 
 	var nodesToTest = map[int][]string{
