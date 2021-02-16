@@ -32,6 +32,7 @@ const (
 const (
 	Game          LogType = 0
 	Configuration LogType = 1
+	Noop          LogType = 2
 )
 
 type ConfigurationLog struct {
@@ -134,6 +135,12 @@ func newGameRaftLog(idx int, term int, log GameLog) RaftLog {
 func newConfigurationRaftLog(idx int, term int, cfgLog ConfigurationLog) RaftLog {
 	var emptyLog = GameLog{"", -1, "", []byte{}, nil}
 	return RaftLog{idx, term, Configuration, emptyLog, cfgLog}
+}
+
+func newNoopRaftLog(idx int, term int) RaftLog {
+	var emptyCfgLog = ConfigurationLog{"", nil, 0, 0, nil}
+	var emptyLog = GameLog{"", -1, "", []byte{}, nil}
+	return RaftLog{idx, term, Noop, emptyLog, emptyCfgLog}
 }
 
 // NewState returns an empty state, only used once at the beginning
@@ -358,8 +365,8 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new
 		}
 
 		if _state.checkMajority(_state.currentElectionVotesNew, _state.currentElectionVotesOld) {
-			_state.winElection()
 			_state.lock.Unlock()
+			_state.winElection()
 			return true
 		}
 	}
@@ -368,6 +375,7 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new
 }
 
 func (_state *stateImpl) winElection() {
+	_state.lock.Lock()
 	log.Info("Become Leader: ", _state.currentTerm)
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
 	_state.currentElectionVotesOld = 0
@@ -379,6 +387,8 @@ func (_state *stateImpl) winElection() {
 	}
 	_state.matchIndex[_state.id] = -1
 	_state.lastSentLogIndex[_state.id] = -1
+	_state.addNewNoopLog()
+	_state.lock.Unlock()
 }
 
 func (_state *stateImpl) prepareAppendEntriesArgs(lastLogIdx int, lastLogTerm int, lastLogHash [32]byte, logsToSend []RaftLog) *AppendEntriesArgs {
@@ -558,6 +568,21 @@ func (_state *stateImpl) addNewConfigurationLog(conf ConfigurationLog) bool {
 
 	_state.lock.Unlock()
 	return true
+}
+
+func (_state *stateImpl) addNewNoopLog() {
+	var lastLogIdx, _ = _state.getLastLogIdxTerm()
+	var newLog = newNoopRaftLog(lastLogIdx+1, _state.currentTerm)
+	if _state.nextLogArrayIdx >= logArrayCapacity {
+		_state.takeSnapshot()
+	}
+	_state.logs[_state.nextLogArrayIdx] = newLog
+	_state.nextLogArrayIdx++
+	_state.logHashes[_state.nextLogArrayIdx-1] = _state.getLogHash(newLog)
+	log.Info("State - add raft log: ", newLog.Idx, " ", newLog.Term, " ", fmt.Sprintf("%x", _state.logHashes[_state.nextLogArrayIdx-1]))
+	_state.matchIndex[_state.id] = newLog.Idx
+	_state.lastSentLogIndex[_state.id] = newLog.Idx
+	_state.nextIndex[_state.id] = newLog.Idx + 1
 }
 
 func (_state *stateImpl) verifyAppendEntriesQuorum(aea *AppendEntriesArgs) bool {

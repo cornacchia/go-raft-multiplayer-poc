@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"go_raft/raft"
 	"math"
-	"math/rand"
 	"strconv"
 )
 
@@ -120,6 +119,11 @@ func generateDeterministicPlayerStartingPosition(playerID PlayerID) Position {
 	return position
 }
 
+func getDeterministicPlayerSprite(playerID PlayerID) int {
+	var idint, _ = strconv.Atoi(fmt.Sprint(playerID))
+	return idint % 6
+}
+
 func applyAction(state *GameState, playerID PlayerID, action ActionImpl) {
 	var delta = 0.01
 	playerData := (*state).Players[playerID]
@@ -158,7 +162,7 @@ func applyAction(state *GameState, playerID PlayerID, action ActionImpl) {
 	case REGISTER:
 		// Register new player
 		var newPosition = generateDeterministicPlayerStartingPosition(playerID)
-		(*state).Players[playerID] = PlayerState{rand.Intn(5), newPosition}
+		(*state).Players[playerID] = PlayerState{getDeterministicPlayerSprite(playerID), newPosition}
 	}
 
 }
