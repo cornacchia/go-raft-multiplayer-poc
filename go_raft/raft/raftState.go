@@ -115,6 +115,8 @@ type stateImpl struct {
 	currentVotesOld           map[ServerID]RequestVoteResponse
 	appendEntriesSituationOld map[ServerID]int
 	appendEntriesSituationNew map[ServerID]int
+	votedForTerm              int
+	votedForChan              chan *RequestVoteResponse
 }
 
 func raftLogToString(log RaftLog) string {
@@ -179,7 +181,9 @@ func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, 
 		make(map[ServerID]RequestVoteResponse),
 		make(map[ServerID]RequestVoteResponse),
 		make(map[ServerID]int),
-		make(map[ServerID]int)}
+		make(map[ServerID]int),
+		-1,
+		nil}
 	return &state
 }
 
@@ -190,7 +194,7 @@ type state interface {
 	getState() instanceState
 	checkElectionTimeout() *time.Timer
 	stopElectionTimeout()
-	handleRequestToVote(*RequestVoteArgs) *RequestVoteResponse
+	handleRequestToVote(requestVoteArgsWrapper) *RequestVoteResponse
 	getElectionTimer() *time.Timer
 	updateElection(*RequestVoteResponse, bool, bool) bool
 	winElection()
@@ -221,6 +225,9 @@ type state interface {
 	updateCommitIndex()
 	ignoreHeartbeatsForThisTerm()
 	shouldIgnoreHeartbeats() bool
+	hasVoted() bool
+	sendPendingVotes()
+	clearPendingVotes()
 }
 
 func (_state *stateImpl) isBanned(sid ServerID) bool {
@@ -288,10 +295,11 @@ func (_state *stateImpl) stopElectionTimeout() {
 }
 
 // TODO increase term if higher
-func (_state *stateImpl) handleRequestToVote(rva *RequestVoteArgs) *RequestVoteResponse {
+func (_state *stateImpl) handleRequestToVote(wrap requestVoteArgsWrapper) *RequestVoteResponse {
+	var rva = wrap.args
 	var hashed = getRequestVoteArgsBytes(rva)
 	err := rsa.VerifyPKCS1v15((_state.nodeKeys[(*rva).CandidateID]), crypto.SHA256, hashed[:], (*rva).Signature)
-	if err != nil {
+	if err != nil || _state.currentState == Leader || _state.votedFor != "" {
 		var rvr = RequestVoteResponse{_state.id, _state.currentTerm, false, []byte{}}
 		rvr.Signature = getRequestVoteResponseSignature(_state.privateKey, &rvr)
 		return &rvr
@@ -301,29 +309,12 @@ func (_state *stateImpl) handleRequestToVote(rva *RequestVoteArgs) *RequestVoteR
 		var rvr = RequestVoteResponse{_state.id, _state.currentTerm, false, []byte{}}
 		rvr.Signature = getRequestVoteResponseSignature(_state.privateKey, &rvr)
 		return &rvr
-	} else if (*rva).Term == _state.currentTerm && (_state.votedFor == "" || _state.votedFor == (*rva).CandidateID) && (*rva).LastLogTerm >= lastLogTerm && (*rva).LastLogIndex >= lastLogIdx {
-		_state.stopElectionTimeout()
-		log.Info("Become Follower")
-		_state.acceptAppendEntries = false
-		_state.currentState = Follower
-		_state.currentTerm = (*rva).Term
+	} else if (*rva).Term > _state.currentTerm && (*rva).LastLogTerm >= lastLogTerm && (*rva).LastLogIndex >= lastLogIdx {
+		log.Trace("Cast lazy vote for: ", (*rva).CandidateID)
 		_state.votedFor = (*rva).CandidateID
-		_state.currentLeader = (*rva).CandidateID
-		var rvr = RequestVoteResponse{_state.id, _state.currentTerm, true, []byte{}}
-		rvr.Signature = getRequestVoteResponseSignature(_state.privateKey, &rvr)
-		return &rvr
-	} else if (*rva).Term > _state.currentTerm {
-		// Our term is out of date, become follower
-		_state.stopElectionTimeout()
-		log.Info("Become Follower")
-		_state.acceptAppendEntries = false
-		_state.currentState = Follower
-		_state.currentTerm = (*rva).Term
-		_state.votedFor = (*rva).CandidateID
-		_state.currentLeader = (*rva).CandidateID
-		var rvr = RequestVoteResponse{_state.id, _state.currentTerm, true, []byte{}}
-		rvr.Signature = getRequestVoteResponseSignature(_state.privateKey, &rvr)
-		return &rvr
+		_state.votedForTerm = (*rva).Term
+		_state.votedForChan = wrap.respChan
+		return nil
 	}
 
 	var rvr = RequestVoteResponse{_state.id, _state.currentTerm, false, []byte{}}
@@ -343,6 +334,7 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new
 		_state.lock.Unlock()
 		return false
 	}
+	log.Trace("Received RequestVoteRPC response: ", resp.Id, " ", resp.Term, " ", resp.VoteGranted)
 	// If the node's current state is stale immediately revert to Follower state
 	if (*resp).Term > (_state.currentTerm) {
 		_state.stopElectionTimeout()
@@ -355,7 +347,7 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new
 		_state.lock.Unlock()
 		return false
 		// Only accept votes for the current term
-	} else if (*resp).Term == (_state.currentTerm) && (*resp).VoteGranted == true {
+	} else if (*resp).Term <= (_state.currentTerm) && (*resp).VoteGranted == true {
 		if old {
 			_state.currentVotesOld[(*resp).Id] = *resp
 			_state.currentElectionVotesOld++
@@ -806,7 +798,7 @@ func (_state *stateImpl) checkMajority(newCount int, oldCount int) bool {
 	if (*_state).oldServerCount > 0 {
 		oldMajority = oldCount > ((*_state).oldServerCount)/2
 	}
-	// log.Trace(fmt.Sprintf("State check majority: new %d/%d, old %d/%d", newCount, (*_state).newServerCount, oldCount, (*_state).oldServerCount))
+	log.Trace(fmt.Sprintf("State check majority: new %d/%d, old %d/%d", newCount, (*_state).newServerCount, oldCount, (*_state).oldServerCount))
 	return newMajority && oldMajority
 }
 
@@ -1130,4 +1122,26 @@ func (_state *stateImpl) ignoreHeartbeatsForThisTerm() {
 
 func (_state *stateImpl) shouldIgnoreHeartbeats() bool {
 	return _state.currentIgnoreTerm == _state.currentTerm
+}
+
+func (_state *stateImpl) hasVoted() bool {
+	return _state.votedFor != "" && _state.votedForChan != nil
+}
+
+func (_state *stateImpl) sendPendingVotes() {
+	var rvr = RequestVoteResponse{_state.id, _state.currentTerm, true, []byte{}}
+	rvr.Signature = getRequestVoteResponseSignature(_state.privateKey, &rvr)
+	_state.votedForChan <- &rvr
+	log.Info("Actually send lazy vote to: ", _state.votedFor)
+	_state.votedForChan = nil
+	_state.votedFor = ""
+}
+
+func (_state *stateImpl) clearPendingVotes() {
+	var rvr = RequestVoteResponse{_state.id, _state.currentTerm, false, []byte{}}
+	rvr.Signature = getRequestVoteResponseSignature(_state.privateKey, &rvr)
+	_state.votedForChan <- &rvr
+	log.Info("Clear lazy vote for: ", _state.votedFor)
+	_state.votedForChan = nil
+	_state.votedFor = ""
 }

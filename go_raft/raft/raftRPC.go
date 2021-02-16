@@ -37,6 +37,11 @@ type RequestVoteArgs struct {
 	Signature    []byte
 }
 
+type requestVoteArgsWrapper struct {
+	args     *RequestVoteArgs
+	respChan chan *RequestVoteResponse
+}
+
 type RequestVoteResponse struct {
 	Id          ServerID
 	Term        int
@@ -95,7 +100,7 @@ type RaftListener struct {
 	AppendEntriesArgsChan          chan *AppendEntriesArgs
 	AppendEntriesResponseChan      chan *AppendEntriesResponse
 	OtherAppendEntriesResponseChan chan *AppendEntriesResponse
-	RequestVoteArgsChan            chan *RequestVoteArgs
+	RequestVoteArgsChan            chan requestVoteArgsWrapper
 	RequestVoteResponseChan        chan *RequestVoteResponse
 	InstallSnapshotArgsChan        chan *InstallSnapshotArgs
 	InstallSnapshtResponseChan     chan *InstallSnapshotResponse
@@ -142,8 +147,10 @@ func (listener *RaftListener) AppendEntriesResponseRPC(args *AppendEntriesRespon
 }
 
 func (listener *RaftListener) RequestVoteRPC(args *RequestVoteArgs, reply *RequestVoteResponse) error {
-	listener.RequestVoteArgsChan <- args
-	repl := <-listener.RequestVoteResponseChan
+	chanResponse := make(chan *RequestVoteResponse)
+	requestVoteWrapper := requestVoteArgsWrapper{args, chanResponse}
+	listener.RequestVoteArgsChan <- requestVoteWrapper
+	repl := <-chanResponse
 	reply.Id = repl.Id
 	reply.Term = repl.Term
 	reply.VoteGranted = repl.VoteGranted

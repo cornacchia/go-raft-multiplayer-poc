@@ -44,7 +44,7 @@ type options struct {
 	// This is used to get responses from remote nodes when sending an AppendEntriesRPC
 	myAppendEntriesResponseChan chan *AppendEntriesResponse
 	// This is used to receive RequestVoteRPC arguments from the other nodes (through the listener)
-	requestVoteArgsChan chan *RequestVoteArgs
+	requestVoteArgsChan chan requestVoteArgsWrapper
 	// This is used to send RequestVoteRPC responses to the other nodes (through the listener)
 	requestVoteResponseChan chan *RequestVoteResponse
 	// This is used to get responses from remote nodes when sending a RequestVoteRPC
@@ -83,7 +83,7 @@ func Start(mode string, port string, otherServers []ServerID, actionChan chan Ga
 		make(chan *AppendEntriesResponse),
 		make(chan *AppendEntriesResponse),
 		make(chan *AppendEntriesResponse),
-		make(chan *RequestVoteArgs),
+		make(chan requestVoteArgsWrapper),
 		make(chan *RequestVoteResponse),
 		make(chan *RequestVoteResponse),
 		make(chan *InstallSnapshotArgs),
@@ -470,6 +470,9 @@ func handleFollower(opt *options) {
 		(*opt)._state.stopElectionTimeout()
 		var response, signatureVerified = (*opt)._state.handleAppendEntries(appEntrArgs)
 		(*opt).appendEntriesResponseChan <- response
+		if response.Success && (*opt)._state.hasVoted() {
+			(*opt)._state.clearPendingVotes()
+		}
 		if signatureVerified {
 			checkNewConfigurations(opt, appEntrArgs)
 		}
@@ -478,8 +481,10 @@ func handleFollower(opt *options) {
 		}
 		// Receive a RequestVoteRPC
 	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
-		(*opt)._state.stopElectionTimeout()
-		(*opt).requestVoteResponseChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
+		var requestResponse = (*opt)._state.handleRequestToVote(reqVoteArgs)
+		if requestResponse != nil {
+			reqVoteArgs.respChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
+		}
 	// Receive a InstallSnapshotRPC
 	case installSnapshotArgs := <-(*opt).installSnapshotArgsChan:
 		installSnapshot(opt, installSnapshotArgs)
@@ -488,16 +493,21 @@ func handleFollower(opt *options) {
 	case <-(*electionTimeoutTimer).C:
 		// Only start new elections if fully connected to the raft network
 		(*opt)._state.stopElectionTimeout()
-		if (*opt).mode == "Node" || (*opt).connected {
-			(*opt)._state.startElection()
-			// Issue requestvoterpc in parallel to other servers
-			if countConnections(opt) > 1 {
-				var requestVoteArgs = (*opt)._state.prepareRequestVoteRPC()
-				sendRequestVoteRPCs(opt, requestVoteArgs)
-			} else {
-				(*opt)._state.winElection()
+		if (*opt)._state.hasVoted() {
+			(*opt)._state.sendPendingVotes()
+		} else {
+			if (*opt).mode == "Node" || (*opt).connected {
+				(*opt)._state.startElection()
+				// Issue requestvoterpc in parallel to other servers
+				if countConnections(opt) > 1 {
+					var requestVoteArgs = (*opt)._state.prepareRequestVoteRPC()
+					sendRequestVoteRPCs(opt, requestVoteArgs)
+				} else {
+					(*opt)._state.winElection()
+				}
 			}
 		}
+
 	// Do nothing, just flush the channel
 	case <-(*opt).myRequestVoteResponseChan:
 	}
@@ -516,6 +526,9 @@ func handleCandidate(opt *options) {
 		// Election timeout is stopped in handleAppendEntries if necessary
 		var response, signatureVerified = (*opt)._state.handleAppendEntries(appEntrArgs)
 		(*opt).appendEntriesResponseChan <- response
+		if response.Success && (*opt)._state.hasVoted() {
+			(*opt)._state.clearPendingVotes()
+		}
 		if signatureVerified {
 			checkNewConfigurations(opt, appEntrArgs)
 		}
@@ -525,7 +538,10 @@ func handleCandidate(opt *options) {
 	// Receive a RequestVoteRPC
 	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
 		// If another candidate asks for a vote the logic doesn't change
-		(*opt).requestVoteResponseChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
+		var requestResponse = (*opt)._state.handleRequestToVote(reqVoteArgs)
+		if requestResponse != nil {
+			reqVoteArgs.respChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
+		}
 		// Receive a InstallSnapshotRPC
 	case installSnapshotArgs := <-(*opt).installSnapshotArgsChan:
 		installSnapshot(opt, installSnapshotArgs)
@@ -541,11 +557,15 @@ func handleCandidate(opt *options) {
 		}
 	case <-(*electionTimeoutTimer).C:
 		(*opt)._state.stopElectionTimeout()
-		// Too much time has passed with no leader or response, start anew
-		(*opt)._state.startElection()
-		// Issue requestvoterpc in parallel to other servers
-		var requestVoteArgs = (*opt)._state.prepareRequestVoteRPC()
-		sendRequestVoteRPCs(opt, requestVoteArgs)
+		if (*opt)._state.hasVoted() {
+			(*opt)._state.sendPendingVotes()
+		} else {
+			// Too much time has passed with no leader or response, start anew
+			(*opt)._state.startElection()
+			// Issue requestvoterpc in parallel to other servers
+			var requestVoteArgs = (*opt)._state.prepareRequestVoteRPC()
+			sendRequestVoteRPCs(opt, requestVoteArgs)
+		}
 	}
 }
 
@@ -767,7 +787,7 @@ func handleLeader(opt *options) {
 		}
 	// Receive a RequestVoteRPC
 	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
-		(*opt).requestVoteResponseChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
+		reqVoteArgs.respChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
 	// Receive a response to a (previously) issued RequestVoteRPC
 	// Do nothing, just flush the channel
 	case <-(*opt).myRequestVoteResponseChan:
