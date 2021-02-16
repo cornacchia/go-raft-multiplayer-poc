@@ -156,7 +156,7 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, changeC
 		var updateLeaderArgs = raft.UpdateLeaderArgs{string(msg.Id), raft.ServerID(currentConnection), []byte{}}
 		updateLeaderArgs.Signature = getUpdateLeaderSignature((*opt).clientPrivateKey, &updateLeaderArgs)
 		broadcastUpdateLeaderRPC(opt, &updateLeaderArgs, changeConnectionChan)
-		changeConnectionChan <- ""
+		// changeConnectionChan <- ""
 		(*opt).actionChan <- msg
 	}
 }

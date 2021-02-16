@@ -182,6 +182,9 @@ func elaborateResults(start int, clientStart int, stop int, pkgToTest string, te
 	var resultActionSent = float64(totalActionSent) / float64(nOfEntries)
 	var actionsPerSecond = totalActionsPerSecond / float64(nOfEntries)
 	log.Info(fmt.Sprintf("Mean for %d nodes => actions: %.3f, actions per second: %.3f, delay: %.3f, dropped: %.3f", stop, resultActionSent, actionsPerSecond, resultActionDelayMs, resultDropped))
+	if resultDropped > 100 {
+		panic("Something wrong with dropped packets")
+	}
 	return results{stop, resultActionSent, actionsPerSecond, resultActionDelayMs, resultDropped}
 }
 
@@ -199,6 +202,55 @@ func removeAllLogFiles() {
 	}
 	for _, f := range files {
 		os.Remove(f)
+	}
+}
+
+func removeAllKeys() {
+	clientFiles, err := filepath.Glob("../keys/clients/*")
+	if err != nil {
+		panic(err)
+	}
+	for _, f := range clientFiles {
+		os.Remove(f)
+	}
+	nodeFiles, err := filepath.Glob("../keys/nodes/*")
+	if err != nil {
+		panic(err)
+	}
+	for _, f := range nodeFiles {
+		os.Remove(f)
+	}
+}
+
+func generateKeys(start int, stop int) {
+	for i := start; i <= stop; i++ {
+		cmdPrivate := exec.Command("openssl", "genrsa", "-out", "key_"+fmt.Sprintf("%d", i)+".pem", "2048")
+		cmdPrivate.Dir = "../keys/clients"
+		errPrivate := cmdPrivate.Run()
+		if errPrivate != nil {
+			panic(errPrivate)
+		}
+		cmdPublic := exec.Command("openssl", "rsa", "-in", "key_"+fmt.Sprintf("%d", i)+".pem", "-outform", "PEM", "-pubout", "-out", "public_key_"+fmt.Sprintf("%d", i)+".pem")
+		cmdPublic.Dir = "../keys/clients"
+		errPublic := cmdPublic.Run()
+		if errPublic != nil {
+			panic(errPublic)
+		}
+	}
+
+	for i := start; i <= stop; i++ {
+		cmdPrivate := exec.Command("openssl", "genrsa", "-out", "key_"+fmt.Sprintf("%d", i)+".pem", "2048")
+		cmdPrivate.Dir = "../keys/nodes"
+		errPrivate := cmdPrivate.Run()
+		if errPrivate != nil {
+			panic(errPrivate)
+		}
+		cmdPublic := exec.Command("openssl", "rsa", "-in", "key_"+fmt.Sprintf("%d", i)+".pem", "-outform", "PEM", "-pubout", "-out", "public_key_"+fmt.Sprintf("%d", i)+".pem")
+		cmdPublic.Dir = "../keys/nodes"
+		errPublic := cmdPublic.Run()
+		if errPublic != nil {
+			panic(errPublic)
+		}
 	}
 }
 
@@ -237,6 +289,8 @@ func testNodesNormal(testMode string, pkgToTest string, number int, testTime int
 
 func testNormal(testMode string, start int, stop int, step int, testTime int, repetitions int, pkgToTest string) {
 	for i := start; i <= stop; i += step {
+		removeAllKeys()
+		generateKeys(6666, 6666+i)
 		var gr = results{i, 0.0, 0.0, 0.0, 0.0}
 		retChan := make(chan results)
 		for j := 0; j < repetitions; j++ {
@@ -312,6 +366,8 @@ func testNodesDynamic(testMode string, killInterval int, testTime int, pkgToTest
 }
 
 func testDynamic(testMode string, start int, stop int, step int, testTime int, repetitions int, pkgToTest string, signal syscall.Signal) {
+	removeAllKeys()
+	generateKeys(6666, 6670)
 	for i := start; i <= stop; i += step {
 		var gr = results{i, 0.0, 0.0, 0.0, 0.0}
 		retChan := make(chan results)
