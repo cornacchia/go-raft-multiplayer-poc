@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -12,6 +11,8 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 type execStats struct {
@@ -22,6 +23,14 @@ type execStats struct {
 	startTs         *time.Time
 	endTs           *time.Time
 	durationSeconds float64
+}
+
+type results struct {
+	nodes            int
+	actionsSent      float64
+	actionsPerSecond float64
+	actionDelay      float64
+	droppedActions   float64
 }
 
 var openCmds = [1024]*exec.Cmd{}
@@ -36,8 +45,8 @@ func newCommand(pkgToTest string, mode string, ports []string, idx int) {
 	openCmds[idx] = cmd
 	cmd.Start()
 	if err := cmd.Wait(); err != nil {
-		fmt.Println("Error starting command ", cmd.Path, " ", cmd.Args)
-		fmt.Println(err)
+		log.Debug("Error starting command ", cmd.Path, " ", cmd.Args)
+		log.Debug(err)
 	}
 }
 
@@ -49,14 +58,14 @@ func killProcess(i int, signal syscall.Signal) {
 }
 
 func killAll(pkgToTest string) {
-	cmd := exec.Command("killall", "-SIGTERM", pkgToTest)
-	log.Printf("Killing all workers")
+	cmd := exec.Command("killall", "-SIGKILL", pkgToTest)
+	log.Debug("Killing all workers")
 	err := cmd.Run()
-	log.Printf("Killing finished with error: %v", err)
+	log.Debug("Killing finished with error: ", err)
 }
 
 func analyzeNodeBehavior(node int) execStats {
-	fmt.Printf("###################### %d #####################\n", node)
+	log.Debug("###################### ", node, " #####################")
 	const timestampLayout = "2006-01-02 15:04:05.000000"
 	var lastRaftLogReceived = -1
 	var lastTurn = -1
@@ -98,7 +107,7 @@ func analyzeNodeBehavior(node int) execStats {
 		if matchLogIdx != nil {
 			var newRaftLogReceived, _ = strconv.Atoi(matchLogIdx[1])
 			if lastRaftLogReceived >= 0 && newRaftLogReceived != lastRaftLogReceived+1 {
-				fmt.Printf("Node %d has a log gap: %d -> %d\n", node, lastRaftLogReceived, newRaftLogReceived)
+				log.Debug(fmt.Sprintf("Node %d has a log gap: %d -> %d\n", node, lastRaftLogReceived, newRaftLogReceived))
 			}
 			lastRaftLogReceived = newRaftLogReceived
 		}
@@ -121,14 +130,15 @@ func analyzeNodeBehavior(node int) execStats {
 		}
 	}
 	if lastTurn >= 0 {
-		fmt.Printf("Node %d: last turn %d\n", node, lastTurn)
+		log.Debug(fmt.Sprintf("Node %d: last turn %d\n", node, lastTurn))
 	}
-	fmt.Printf("Node %d: last received raft log %d\n", node, lastRaftLogReceived)
+	log.Debug(fmt.Sprintf("Node %d: last received raft log %d\n", node, lastRaftLogReceived))
 	stats.durationSeconds = (*stats.endTs).Sub((*stats.startTs)).Seconds()
 	return stats
 }
 
-func appendResultsToFile(filename string, text string) {
+func appendResultsToFile(filename string, res results) {
+	var text = fmt.Sprintf("%d %.3f %.3f %.3f %.3f", res.nodes, res.actionsSent, res.actionsPerSecond, res.actionDelay, res.droppedActions)
 	f, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
 	if err != nil {
 		panic(err)
@@ -141,7 +151,7 @@ func appendResultsToFile(filename string, text string) {
 	}
 }
 
-func elaborateResults(start int, clientStart int, stop int, pkgToTest string, testTime int, testMode string) {
+func elaborateResults(start int, clientStart int, stop int, pkgToTest string, testTime int, testMode string) results {
 	var totalActionDelayMs float64 = 0
 	var totalActionSent int64 = 0
 	var totalDropped int64 = 0
@@ -165,14 +175,14 @@ func elaborateResults(start int, clientStart int, stop int, pkgToTest string, te
 		}
 	}
 	if notStarted > 0 {
-		fmt.Println("!!! Some nodes did not start: ", notStarted)
+		log.Info("!!! Some nodes did not start: ", notStarted)
 	}
 	var resultActionDelayMs = totalActionDelayMs / float64(nOfEntries)
 	var resultDropped = float64(totalDropped) / float64(nOfEntries)
 	var resultActionSent = float64(totalActionSent) / float64(nOfEntries)
 	var actionsPerSecond = totalActionsPerSecond / float64(nOfEntries)
-	fmt.Println(fmt.Sprintf("Mean for %d nodes => actions: %.3f, actions per second: %.3f, delay: %.3f, dropped: %.3f", stop, resultActionSent, actionsPerSecond, resultActionDelayMs, resultDropped))
-	appendResultsToFile("./results/"+pkgToTest+"_"+testMode, fmt.Sprintf("%d %.3f %.3f %.3f %.3f", stop, resultActionSent, actionsPerSecond, resultActionDelayMs, resultDropped))
+	log.Info(fmt.Sprintf("Mean for %d nodes => actions: %.3f, actions per second: %.3f, delay: %.3f, dropped: %.3f", stop, resultActionSent, actionsPerSecond, resultActionDelayMs, resultDropped))
+	return results{stop, resultActionSent, actionsPerSecond, resultActionDelayMs, resultDropped}
 }
 
 func waitSomeTime(duration time.Duration, retChans []chan bool) {
@@ -192,10 +202,10 @@ func removeAllLogFiles() {
 	}
 }
 
-func testNodesNormal(testMode string, pkgToTest string, number int, testTime int, retChan chan bool) {
+func testNodesNormal(testMode string, pkgToTest string, number int, testTime int, retChan chan results) {
 	removeAllLogFiles()
-	fmt.Println("###################################")
-	fmt.Println("##### Normal test for ", number, " nodes")
+	log.Debug("###################################")
+	log.Debug("##### Normal test for ", number, " nodes, ")
 
 	var nodesToTest = map[int][]string{
 		1: {"6667", "6666"},
@@ -228,30 +238,40 @@ func testNodesNormal(testMode string, pkgToTest string, number int, testTime int
 
 	killAll(pkgToTest)
 
-	elaborateResults(0, 5, number, pkgToTest, testTime, testMode)
-
-	retChan <- true
+	retChan <- elaborateResults(0, 5, number, pkgToTest, testTime, testMode)
 }
 
-func testNormal(testMode string, start int, stop int, step int, testTime int, pkgToTest string) {
+func testNormal(testMode string, start int, stop int, step int, testTime int, repetitions int, pkgToTest string) {
 	for i := start; i <= stop; i += step {
-		retChan := make(chan bool)
-		go testNodesNormal(testMode, pkgToTest, i, testTime, retChan)
-		<-retChan
-		time.Sleep(time.Second * 10)
+		var gr = results{i, 0.0, 0.0, 0.0, 0.0}
+		retChan := make(chan results)
+		for j := 0; j < repetitions; j++ {
+			go testNodesNormal(testMode, pkgToTest, i, testTime, retChan)
+			cr := <-retChan
+			gr.actionsSent += cr.actionsSent
+			gr.actionsPerSecond += cr.actionsPerSecond
+			gr.actionDelay += cr.actionDelay
+			gr.droppedActions += cr.droppedActions
+			time.Sleep(time.Second * 10)
+		}
+		gr.actionsSent = gr.actionsSent / float64(repetitions)
+		gr.actionsPerSecond = gr.actionsPerSecond / float64(repetitions)
+		gr.actionDelay = gr.actionDelay / float64(repetitions)
+		gr.droppedActions = gr.droppedActions / float64(repetitions)
+		log.Info(fmt.Sprintf("Mean results for %d nodes and %d repetitions => actions: %.3f, actions per second: %.3f, delay: %.3f, dropped: %.3f", i, repetitions, gr.actionsSent, gr.actionsPerSecond, gr.actionDelay, gr.droppedActions))
+		appendResultsToFile("./results/"+pkgToTest+"_"+testMode, gr)
 	}
 }
 
 func killWorkers(pkgToTest string, signal syscall.Signal, killInterval int, retChan chan bool, nodesToTest map[int][]string) {
 	var currentWorkerIdx = 0
-	fmt.Print("Killing nodes: ")
+	log.Debug("Killing nodes: ")
 	for {
 		select {
 		case <-retChan:
-			fmt.Println("Stop killing nodes")
+			log.Debug("Stop killing nodes")
 			return
 		case <-time.After(time.Second * time.Duration(killInterval)):
-			fmt.Print(currentWorkerIdx, ", ")
 			killProcess(currentWorkerIdx, signal)
 			time.Sleep(time.Second * 10)
 			var val, _ = nodesToTest[currentWorkerIdx]
@@ -261,14 +281,14 @@ func killWorkers(pkgToTest string, signal syscall.Signal, killInterval int, retC
 	}
 }
 
-func testNodesDynamic(testMode string, killInterval int, testTime int, pkgToTest string, retChan chan bool, signal syscall.Signal) {
+func testNodesDynamic(testMode string, killInterval int, testTime int, pkgToTest string, retChan chan results, signal syscall.Signal) {
 	removeAllLogFiles()
-	fmt.Println("###################################")
-	fmt.Print("##### Dynamic test for nodes: ")
+	log.Debug("###################################")
+	log.Debug("##### Dynamic test for nodes: ")
 	if signal == syscall.SIGTERM {
-		fmt.Println("SIGTERM")
+		log.Debug("SIGTERM")
 	} else {
-		fmt.Println("SIGKILL")
+		log.Debug("SIGKILL")
 	}
 
 	var nodesToTest = map[int][]string{
@@ -307,16 +327,27 @@ func testNodesDynamic(testMode string, killInterval int, testTime int, pkgToTest
 
 	killAll(pkgToTest)
 
-	elaborateResults(0, 5, len(nodesToTest)+len(clientsToTest), pkgToTest, testTime, testMode)
-	retChan <- true
+	retChan <- elaborateResults(0, 5, len(nodesToTest)+len(clientsToTest), pkgToTest, testTime, testMode)
 }
 
-func testDynamic(testMode string, start int, stop int, step int, testTime int, pkgToTest string, signal syscall.Signal) {
+func testDynamic(testMode string, start int, stop int, step int, testTime int, repetitions int, pkgToTest string, signal syscall.Signal) {
 	for i := start; i <= stop; i += step {
-		retChan := make(chan bool)
-		go testNodesDynamic(testMode, i, testTime, pkgToTest, retChan, signal)
-		<-retChan
-		time.Sleep(time.Second * 10)
+		var gr = results{i, 0.0, 0.0, 0.0, 0.0}
+		retChan := make(chan results)
+		for j := 0; j < repetitions; j++ {
+			go testNodesDynamic(testMode, i, testTime, pkgToTest, retChan, signal)
+			cr := <-retChan
+			gr.actionsSent += cr.actionsSent
+			gr.actionsPerSecond += cr.actionsPerSecond
+			gr.actionDelay += cr.actionDelay
+			gr.droppedActions += cr.droppedActions
+			time.Sleep(time.Second * 10)
+		}
+		gr.actionsSent = gr.actionsSent / float64(repetitions)
+		gr.actionsPerSecond = gr.actionsPerSecond / float64(repetitions)
+		gr.actionDelay = gr.actionDelay / float64(repetitions)
+		gr.droppedActions = gr.droppedActions / float64(repetitions)
+		appendResultsToFile("./results/"+pkgToTest+"_"+testMode, gr)
 	}
 }
 
@@ -329,39 +360,47 @@ func handlePrematureTermination(pkgToTest string, termChan chan os.Signal, compl
 	}
 }
 
-func estimateTimeOfExecution(start int, stop int, step int, testTime int) float64 {
+func estimateTimeOfExecution(start int, stop int, step int, testTime int, repetitions int, mode string) float64 {
 	var result = 0.0
 	for i := start; i <= stop; i += step {
-		result += float64(i)
-		result += float64(testTime)
-		result += 10
+		for j := 0; j < repetitions; j++ {
+			if mode == "normal" {
+				result += float64(i)
+			} else {
+				result += 5
+			}
+			result += float64(testTime)
+			result += 10
+		}
 	}
+	result += 5
 	return result
 }
 
 func main() {
+	log.SetLevel(log.InfoLevel)
 	args := os.Args
-	if len(args) < 7 {
-		log.Fatal("Usage: go_test <dynamic | faulty | normal> <go_skeletons | go_wanderer> <time> <start> <finish> <step>")
+	if len(args) < 8 {
+		log.Fatal("Usage: go_test <dynamic | faulty | normal> <go_skeletons | go_wanderer> <repetitions> <test time> <start> <finish> <step>")
 	}
 	var testMode = args[1]
 	var pkgToTest = args[2]
-	var testTimeStr = args[3]
+	var repetitionsStr = args[3]
+	var testTimeStr = args[4]
 	var testTime, _ = strconv.Atoi(testTimeStr)
+	var repetitions, _ = strconv.Atoi(repetitionsStr)
 	var start = -1
 	var stop = -1
 	var step = -1
-	var startStr = args[4]
-	var stopStr = args[5]
-	var stepStr = args[6]
+	var startStr = args[5]
+	var stopStr = args[6]
+	var stepStr = args[7]
 	start, _ = strconv.Atoi(startStr)
 	stop, _ = strconv.Atoi(stopStr)
 	step, _ = strconv.Atoi(stepStr)
 
-	if testMode == "normal" {
-		var estTimeOfExecution = estimateTimeOfExecution(start, stop, step, testTime)
-		fmt.Println(fmt.Sprintf("Est. time to wait: %.2f seconds (~%d minutes)", estTimeOfExecution, int(estTimeOfExecution)/60))
-	}
+	var estTimeOfExecution = estimateTimeOfExecution(start, stop, step, testTime, repetitions, testMode)
+	log.Info(fmt.Sprintf("Est. time to wait: %.2f seconds (~%d minutes)", estTimeOfExecution, int(estTimeOfExecution)/60))
 
 	os.Remove("./results/" + pkgToTest + "_" + testMode)
 
@@ -372,11 +411,11 @@ func main() {
 	go handlePrematureTermination(pkgToTest, termChan, completeChan)
 
 	if testMode == "normal" {
-		testNormal(testMode, start, stop, step, testTime, pkgToTest)
+		testNormal(testMode, start, stop, step, testTime, repetitions, pkgToTest)
 	} else if testMode == "dynamic" {
-		testDynamic(testMode, start, stop, step, testTime, pkgToTest, syscall.SIGTERM)
+		testDynamic(testMode, start, stop, step, testTime, repetitions, pkgToTest, syscall.SIGTERM)
 	} else if testMode == "faulty" {
-		testDynamic(testMode, start, stop, step, testTime, pkgToTest, syscall.SIGKILL)
+		testDynamic(testMode, start, stop, step, testTime, repetitions, pkgToTest, syscall.SIGKILL)
 	}
 
 	completeChan <- true

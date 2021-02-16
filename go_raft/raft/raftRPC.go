@@ -44,6 +44,7 @@ type InstallSnapshotArgs struct {
 	ServerConfiguration map[ServerID][2]bool
 	OldServerCount      int
 	NewServerCount      int
+	Hash                [32]byte
 }
 
 type InstallSnapshotResponse struct {

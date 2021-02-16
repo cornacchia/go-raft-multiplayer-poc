@@ -357,12 +357,12 @@ func run(opt *uiOptions) {
 }
 
 func initializeSprites() {
-	sprites["player_0"] = &sprite{"/assets/player_spritesheet_1.png", nil, 64, 64}
-	sprites["player_1"] = &sprite{"/assets/player_spritesheet_2.png", nil, 64, 64}
-	sprites["player_2"] = &sprite{"/assets/player_spritesheet_3.png", nil, 64, 64}
-	sprites["player_3"] = &sprite{"/assets/player_spritesheet_4.png", nil, 64, 64}
-	sprites["player_4"] = &sprite{"/assets/player_spritesheet_5.png", nil, 64, 64}
-	sprites["player_5"] = &sprite{"/assets/player_spritesheet_6.png", nil, 64, 64}
+	sprites["player_0"] = &sprite{"/assets/player_spritesheet_0.png", nil, 64, 64}
+	sprites["player_1"] = &sprite{"/assets/player_spritesheet_1.png", nil, 64, 64}
+	sprites["player_2"] = &sprite{"/assets/player_spritesheet_2.png", nil, 64, 64}
+	sprites["player_3"] = &sprite{"/assets/player_spritesheet_3.png", nil, 64, 64}
+	sprites["player_4"] = &sprite{"/assets/player_spritesheet_4.png", nil, 64, 64}
+	sprites["player_5"] = &sprite{"/assets/player_spritesheet_5.png", nil, 64, 64}
 }
 
 func loadImages() {

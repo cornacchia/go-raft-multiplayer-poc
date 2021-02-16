@@ -77,6 +77,8 @@ function getLogHtml(log) {
   if (log.bl) htmlString += 'Become Leader (term: ' + log.bl.t + ')'
   if (log.al) htmlString += 'Apply log: ' + log.al.i
   if (log.sd) htmlString += 'Shutting down'
+  if (log.adl) htmlString += 'Add log: ' + log.adl.i
+  if (log.rl) htmlString += 'Remove logs (from: ' + log.rl.si + ', to: ' + log.rl.ei + ')'
   return htmlString
 }
 
@@ -141,6 +143,24 @@ function renderElectionSafetyViolations(data) {
   return result
 }
 
+function renderLeaderAppendOnlyViolations(data) {
+  if (data.length === 0) return '<li><i class="fas fa-check"></i> No leader append only violations</li>'
+  let result = ''
+  for (const datum of data) {
+    result += '<li> Leader append only violation. Leader removed ' + datum.log.rl.ei - datum.log.rl.si + ' logs from its list</li>'
+  }
+  return result
+}
+
+function renderLogMatchingViolations(data) {
+  if (data.length === 0) return '<li><i class="fas fa-check"></i> No log matching violations</li>'
+  let result = ''
+  for (const datum of data) {
+    result += '<li> Log matching violation. Expected: ' + datum.lastHash + ', found: ' + datum.log.adl.h + '</li>'
+  }
+  return result
+}
+
 function renderStateMachineSafetyViolations(data) {
   if (data.length === 0) return '<li><i class="fas fa-check"></i> No state machine safety violations</li>'
   let result = ''
@@ -163,6 +183,8 @@ function renderAnalysisResults(analysis) {
   let resultHtml = '<strong>Analysis results</strong><br/>'
   resultHtml += '<ul>'
   resultHtml += renderElectionSafetyViolations(analysis.violations.electionSafety)
+  resultHtml += renderLeaderAppendOnlyViolations(analysis.violations.leaderAppendOnly)
+  resultHtml += renderLogMatchingViolations(analysis.violations.logMatching)
   resultHtml += renderStateMachineSafetyViolations(analysis.violations.stateMachineSafety)
   resultHtml += renderLeaderCompletenessViolations(analysis.violations.leaderCompleteness)
   resultHtml += '</ul>'
@@ -290,7 +312,6 @@ function renderLoadingLogs(loadingLogs) {
   } else {
     $('#loadingMsg').attr('hidden', true)
     $('#loadLogs').prop('disabled', false)
-    $('#analyzeLogs').prop('disabled', false)
     $('#raft-log-folder').prop('disabled', false)
     $('#db-collection').prop('disabled', false)
     $('#collectionSelect').prop('disabled', false)

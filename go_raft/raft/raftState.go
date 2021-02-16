@@ -1,6 +1,9 @@
 package raft
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"math"
 	"math/rand"
@@ -30,6 +33,7 @@ const (
 const (
 	Game          LogType = 0
 	Configuration LogType = 1
+	Noop          LogType = 2
 )
 
 type ConfigurationLog struct {
@@ -64,6 +68,11 @@ type snapshot struct {
 	gameState           []byte
 	lastIncludedIndex   int
 	lastIncludedTerm    int
+	hash                [32]byte
+}
+
+type clientStateStruct struct {
+	lastActionApplied int64
 }
 
 // ServerID is the identification code for a raft server
@@ -82,6 +91,7 @@ type stateImpl struct {
 	currentTerm             int
 	votedFor                ServerID
 	logs                    [logArrayCapacity]RaftLog
+	logHashes               [logArrayCapacity][32]byte
 	nextLogArrayIdx         int
 	lastSnapshot            *snapshot
 	currentState            instanceState
@@ -90,13 +100,29 @@ type stateImpl struct {
 	nextIndex               map[ServerID]int
 	matchIndex              map[ServerID]int
 	serverConfiguration     map[ServerID][2]bool
-	serverLastActionApplied map[ServerID]int64
+	clientState             map[ServerID]clientStateStruct
 	newServerCount          int
 	oldServerCount          int
 	newServerResponseChan   map[ServerID]chan bool
 	lock                    *sync.Mutex
 	snapshotRequestChan     chan bool
 	snapshotResponseChan    chan []byte
+}
+
+func getRaftLogBytes(rl RaftLog) []byte {
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.LittleEndian, rl.Idx)
+	binary.Write(buf, binary.LittleEndian, rl.Term)
+	binary.Write(buf, binary.LittleEndian, rl.Type)
+	binary.Write(buf, binary.LittleEndian, rl.Log.Id)
+	binary.Write(buf, binary.LittleEndian, rl.Log.ActionId)
+	binary.Write(buf, binary.LittleEndian, rl.Log.Type)
+	binary.Write(buf, binary.LittleEndian, rl.Log.Action)
+	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.Id)
+	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.ConnMap)
+	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.OldCount)
+	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.NewCount)
+	return buf.Bytes()
 }
 
 func raftLogToString(log RaftLog) string {
@@ -116,16 +142,22 @@ func newConfigurationRaftLog(idx int, term int, cfgLog ConfigurationLog) RaftLog
 	return RaftLog{idx, term, Configuration, emptyLog, cfgLog}
 }
 
+func newNoopRaftLog(idx int, term int) RaftLog {
+	var emptyCfgLog = ConfigurationLog{"", nil, 0, 0, nil}
+	var emptyLog = GameLog{"", -1, "", []byte{}, nil}
+	return RaftLog{idx, term, Noop, emptyLog, emptyCfgLog}
+}
+
 // NewState returns an empty state, only used once at the beginning
 func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, snapshotResponseChan chan []byte) *stateImpl {
 	var lastSentLogIndex = make(map[ServerID]int)
 	var nextIndex = make(map[ServerID]int)
 	var matchIndex = make(map[ServerID]int)
 	var serverConfiguration = make(map[ServerID][2]bool)
-	var serverLastActionApplied = make(map[ServerID]int64)
+	var clientState = make(map[ServerID]clientStateStruct)
 	var newServerResponseChan = make(map[ServerID]chan bool)
 	var lock = &sync.Mutex{}
-	return &stateImpl{
+	var state = stateImpl{
 		ServerID(id),
 		false,
 		nil,
@@ -135,22 +167,24 @@ func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, 
 		"",
 		0,
 		"",
-		[logArrayCapacity]RaftLog{newGameRaftLog(0, 0, GameLog{"", -1, "", []byte{}, nil})},
-		1,
+		[logArrayCapacity]RaftLog{},
+		[logArrayCapacity][32]byte{},
+		0,
 		nil,
 		Follower,
-		0,
+		-1,
 		0,
 		nextIndex,
 		matchIndex,
 		serverConfiguration,
-		serverLastActionApplied,
+		clientState,
 		0,
 		0,
 		newServerResponseChan,
 		lock,
 		snapshotRequestChan,
 		snapshotResponseChan}
+	return &state
 }
 
 // State interface for raft server instances
@@ -184,8 +218,8 @@ type state interface {
 	prepareInstallSnapshotRPC() *InstallSnapshotArgs
 	handleInstallSnapshotResponse(*InstallSnapshotResponse) int
 	handleInstallSnapshotRequest(*InstallSnapshotArgs) *InstallSnapshotResponse
-	updateServerLastActionApplied(ServerID, int64)
-	getServerLastActionApplied(ServerID) int64
+	updateClientLastActionApplied(ServerID, int64)
+	getClientLastActionApplied(ServerID) int64
 }
 
 /* To start a new election a server:
@@ -286,8 +320,8 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new
 		}
 
 		if _state.checkMajority(_state.currentElectionVotesNew, _state.currentElectionVotesOld) {
-			_state.winElection()
 			_state.lock.Unlock()
+			_state.winElection()
 			return true
 		}
 	}
@@ -296,6 +330,7 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new
 }
 
 func (_state *stateImpl) winElection() {
+	_state.lock.Lock()
 	log.Info("Become Leader: ", _state.currentTerm)
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
 	_state.currentElectionVotesOld = 0
@@ -307,6 +342,8 @@ func (_state *stateImpl) winElection() {
 	}
 	_state.matchIndex[_state.id] = -1
 	_state.lastSentLogIndex[_state.id] = -1
+	_state.addNewNoopLog()
+	_state.lock.Unlock()
 }
 
 func (_state *stateImpl) prepareAppendEntriesArgs(lastLogIdx int, lastLogTerm int, logsToSend []RaftLog) *AppendEntriesArgs {
@@ -323,8 +360,11 @@ func (_state *stateImpl) getLastLogIdxTerm() (int, int) {
 	if _state.nextLogArrayIdx > 0 {
 		var lastLog = _state.logs[_state.nextLogArrayIdx-1]
 		return lastLog.Idx, lastLog.Term
+	} else if _state.lastSnapshot != nil {
+		return _state.lastSnapshot.lastIncludedIndex, _state.lastSnapshot.lastIncludedTerm
+	} else {
+		return -1, -1
 	}
-	return (*_state.lastSnapshot).lastIncludedIndex, (*_state.lastSnapshot).lastIncludedTerm
 }
 
 func (_state *stateImpl) findArrayIndexByLogIndex(idx int) (bool, int) {
@@ -355,8 +395,8 @@ func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
 	if arrayLogIdx >= 0 && arrayLogIdx < _state.nextLogArrayIdx {
 		logsToSend = _state.logs[arrayLogIdx:_state.nextLogArrayIdx]
 	}
-	var lastLogIdx = 0
-	var lastLogTerm = 0
+	var lastLogIdx = -1
+	var lastLogTerm = -1
 	if arrayLogIdx < 0 {
 		lastLogIdx = myLastLogIdx
 		lastLogTerm = myLastLogTerm
@@ -379,6 +419,20 @@ func (_state *stateImpl) getAppendEntriesArgs(id ServerID) *AppendEntriesArgs {
 	return _state.prepareAppendEntriesArgs(lastLogIdx, lastLogTerm, logsToSend)
 }
 
+func (_state *stateImpl) getLogHash(raftLog RaftLog) [32]byte {
+	var logBytes = getRaftLogBytes(raftLog)
+	var _, logArrIdx = _state.findArrayIndexByLogIndex(raftLog.Idx)
+	if logArrIdx > 0 {
+		log.Trace("Compute hash based on previous log: ", fmt.Sprintf("%x", _state.logHashes[logArrIdx-1]))
+		return sha256.Sum256(append(logBytes[:], _state.logHashes[logArrIdx-1][:]...))
+	} else if _state.lastSnapshot != nil {
+		log.Trace("Compute hash based on snapshot: ", fmt.Sprintf("%x", _state.lastSnapshot.hash))
+		return sha256.Sum256(append(logBytes[:], _state.lastSnapshot.hash[:]...))
+	}
+	log.Trace("Compute hash bsed on raft log only")
+	return sha256.Sum256(logBytes[:])
+}
+
 func (_state *stateImpl) addNewGameLog(msg GameLog) bool {
 	_state.lock.Lock()
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
@@ -392,6 +446,8 @@ func (_state *stateImpl) addNewGameLog(msg GameLog) bool {
 	}
 	_state.logs[_state.nextLogArrayIdx] = newLog
 	_state.nextLogArrayIdx++
+	_state.logHashes[_state.nextLogArrayIdx-1] = _state.getLogHash(newLog)
+	log.Info("State - add raft log: ", newLog.Idx, " ", newLog.Term, " ", fmt.Sprintf("%x", _state.logHashes[_state.nextLogArrayIdx-1]))
 	_state.matchIndex[_state.id] = newLog.Idx
 	_state.lastSentLogIndex[_state.id] = newLog.Idx
 	_state.nextIndex[_state.id] = newLog.Idx + 1
@@ -412,11 +468,28 @@ func (_state *stateImpl) addNewConfigurationLog(conf ConfigurationLog) bool {
 	}
 	_state.logs[_state.nextLogArrayIdx] = newLog
 	_state.nextLogArrayIdx++
+	_state.logHashes[_state.nextLogArrayIdx-1] = _state.getLogHash(newLog)
+	log.Info("State - add raft log: ", newLog.Idx, " ", newLog.Term, " ", fmt.Sprintf("%x", _state.logHashes[_state.nextLogArrayIdx-1]))
 	_state.matchIndex[_state.id] = newLog.Idx
 	_state.lastSentLogIndex[_state.id] = newLog.Idx
 	_state.nextIndex[_state.id] = newLog.Idx + 1
 	_state.lock.Unlock()
 	return true
+}
+
+func (_state *stateImpl) addNewNoopLog() {
+	var lastLogIdx, _ = _state.getLastLogIdxTerm()
+	var newLog = newNoopRaftLog(lastLogIdx+1, _state.currentTerm)
+	if _state.nextLogArrayIdx >= logArrayCapacity {
+		_state.takeSnapshot()
+	}
+	_state.logs[_state.nextLogArrayIdx] = newLog
+	_state.nextLogArrayIdx++
+	_state.logHashes[_state.nextLogArrayIdx-1] = _state.getLogHash(newLog)
+	log.Info("State - add raft log: ", newLog.Idx, " ", newLog.Term, " ", fmt.Sprintf("%x", _state.logHashes[_state.nextLogArrayIdx-1]))
+	_state.matchIndex[_state.id] = newLog.Idx
+	_state.lastSentLogIndex[_state.id] = newLog.Idx
+	_state.nextIndex[_state.id] = newLog.Idx + 1
 }
 
 func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntriesResponse {
@@ -440,17 +513,21 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 		return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
 	}
 
-	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
-	var found, prevLogIdx = _state.findArrayIndexByLogIndex((*aea).PrevLogIndex)
-	if !found {
-		// If we didn't find the previous log index it may be included in the last snapshot
-		// so we check if there exists a last snapshot and if it includes the previous log index
-		if _state.lastSnapshot == nil || (*_state.lastSnapshot).lastIncludedIndex < (*aea).PrevLogIndex {
-			return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
-		}
-	} else {
-		if _state.logs[prevLogIdx].Term != (*aea).PrevLogTerm {
-			return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
+	var prevLogIdx = -1
+	var found = false
+	if (*aea).PrevLogIndex >= 0 {
+		// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
+		found, prevLogIdx = _state.findArrayIndexByLogIndex((*aea).PrevLogIndex)
+		if !found {
+			// If we didn't find the previous log index it may be included in the last snapshot
+			// so we check if there exists a last snapshot and if it includes the previous log index
+			if _state.lastSnapshot == nil || (*_state.lastSnapshot).lastIncludedIndex < (*aea).PrevLogIndex {
+				return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
+			}
+		} else {
+			if _state.logs[prevLogIdx].Term != (*aea).PrevLogTerm {
+				return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
+			}
 		}
 	}
 
@@ -482,13 +559,16 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 		if nextIdx >= _state.nextLogArrayIdx {
 			_state.logs[nextIdx] = (*aea).Entries[i]
 			_state.nextLogArrayIdx = nextIdx + 1
-			log.Info("State - add raft log: ", (*aea).Entries[i].Idx)
+			_state.logHashes[nextIdx] = _state.getLogHash(_state.logs[nextIdx])
+			log.Info("State - add raft log: ", _state.logs[nextIdx].Idx, " ", _state.logs[nextIdx].Term, " ", fmt.Sprintf("%x", _state.logHashes[nextIdx]))
 		} else {
 			// If the terms conflict (different index or same index and different terms) remove all the remaining logs
 			if _state.logs[nextIdx].Idx != (*aea).Entries[i].Idx || _state.logs[nextIdx].Term != (*aea).Entries[i].Term {
+				log.Info("State - Removing logs: ", _state.logs[nextIdx].Idx, " ", _state.logs[_state.nextLogArrayIdx-1].Idx, " (AppendEntriesRPC)")
 				_state.logs[nextIdx] = (*aea).Entries[i]
 				_state.nextLogArrayIdx = nextIdx + 1
-				log.Info("State - add raft log: ", (*aea).Entries[i].Idx)
+				_state.logHashes[nextIdx] = _state.getLogHash(_state.logs[nextIdx])
+				log.Info("State - add raft log: ", _state.logs[nextIdx].Idx, " ", _state.logs[nextIdx].Term, " ", fmt.Sprintf("%x", _state.logHashes[nextIdx]))
 			}
 			// Otherwise we should be confident that the logs are the same and need not be replaced
 		}
@@ -518,7 +598,11 @@ func (_state *stateImpl) handleAppendEntriesResponse(aer *AppendEntriesResponse)
 			return -1, false
 		}
 		var snapshot = false
-		_state.nextIndex[(*aer).Id] = (*aer).LastIndex
+		if (*aer).LastIndex >= 0 {
+			_state.nextIndex[(*aer).Id] = (*aer).LastIndex
+		} else {
+			_state.nextIndex[(*aer).Id] = 0
+		}
 		if _state.lastSnapshot != nil && _state.nextIndex[(*aer).Id] <= (*_state.lastSnapshot).lastIncludedIndex {
 			snapshot = true
 		}
@@ -617,7 +701,7 @@ func (_state *stateImpl) addNewServer(sid ServerID) {
 
 func (_state *stateImpl) removeServer(sid ServerID) {
 	_state.lock.Lock()
-	delete(_state.serverLastActionApplied, sid)
+	delete(_state.clientState, sid)
 	if _state.serverConfiguration[sid][0] {
 		_state.oldServerCount--
 	}
@@ -643,8 +727,8 @@ func (_state *stateImpl) updateServerConfiguration(sid ServerID, conf [2]bool) {
 	}
 	log.Trace("State: Update server configuration ", _state.serverConfiguration)
 	log.Trace("State: new: ", _state.newServerCount, ", old: ", _state.oldServerCount)
-	if _, found := _state.serverLastActionApplied[sid]; !found {
-		_state.serverLastActionApplied[sid] = -1
+	if _, found := _state.clientState[sid]; !found {
+		_state.clientState[sid] = clientStateStruct{-1}
 	}
 	_state.lock.Unlock()
 }
@@ -670,6 +754,7 @@ func (_state *stateImpl) copyLogsToBeginningOfRecord(startLog int) {
 	for startLog+restartIdx < _state.nextLogArrayIdx {
 		// log.Trace("Copy log from ", startLog+restartIdx, "(", _state.logs[startLog+restartIdx].Idx, ")", "to ", restartIdx)
 		_state.logs[restartIdx] = _state.logs[startLog+restartIdx]
+		_state.logHashes[restartIdx] = _state.logHashes[startLog+restartIdx]
 		restartIdx++
 	}
 	_state.nextLogArrayIdx = restartIdx
@@ -689,7 +774,8 @@ func (_state *stateImpl) takeSnapshot() bool {
 		_state.newServerCount,
 		currentGameState,
 		_state.logs[lastAppliedIdx].Idx,
-		_state.logs[lastAppliedIdx].Term}
+		_state.logs[lastAppliedIdx].Term,
+		_state.logHashes[lastAppliedIdx]}
 	_state.lastSnapshot = &newSnapshot
 	// Copy remaining logs at the start of the log array
 	_state.copyLogsToBeginningOfRecord(lastAppliedIdx + 1)
@@ -706,7 +792,8 @@ func (_state *stateImpl) prepareInstallSnapshotRPC() *InstallSnapshotArgs {
 		lastSnapshot.gameState,
 		lastSnapshot.serverConfiguration,
 		lastSnapshot.oldServerCount,
-		lastSnapshot.newServerCount}
+		lastSnapshot.newServerCount,
+		lastSnapshot.hash}
 	return &newInstallSnapshotArgs
 }
 
@@ -735,12 +822,7 @@ func (_state *stateImpl) checkIfSnapshotShouldBeInstalled(isa *InstallSnapshotAr
 	if (*isa).Term < _state.currentTerm {
 		// Do not install snapshots for obsolete terms
 		result = false
-	} //else if _state.lastSnapshot != nil {
-	// Do not install snapshots more than once or overwrite greater snapshots
-	//if (*isa).LastIncludedIndex <= _state.lastSnapshot.lastIncludedIndex && (*isa).LastIncludedTerm <= _state.lastSnapshot.lastIncludedTerm {
-	//	result = false
-	//}
-	//}
+	}
 	return result
 }
 
@@ -750,10 +832,11 @@ func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) 
 		return &InstallSnapshotResponse{_state.id, _state.currentTerm, false, -1, -1}
 	}
 
-	// var lastLogIdx = -1
-	//if _state.nextLogArrayIdx > 0 {
-	//	lastLogIdx = _state.logs[_state.nextLogArrayIdx-1].Idx
-	//}
+	var lastLogIdx, _ = _state.getLastLogIdxTerm()
+	if (*isa).LastIncludedIndex < lastLogIdx {
+		var _, lastIncludedArrIdx = _state.findArrayIndexByLogIndex((*isa).LastIncludedIndex)
+		log.Info("State - Removing logs: ", _state.logs[lastIncludedArrIdx].Idx, " ", _state.logs[_state.nextLogArrayIdx-1].Idx, " (InstallSnapshotRPC)")
+	}
 
 	// Apply snapshot
 	var newSnapshot = snapshot{
@@ -762,46 +845,29 @@ func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) 
 		(*isa).NewServerCount,
 		(*isa).Data,
 		(*isa).LastIncludedIndex,
-		(*isa).LastIncludedTerm}
+		(*isa).LastIncludedTerm,
+		(*isa).Hash}
 	_state.lastSnapshot = &newSnapshot
 
 	_state.nextLogArrayIdx = 0
 	_state.commitIndex = (*isa).LastIncludedIndex
 	_state.lastApplied = (*isa).LastIncludedIndex
-	/*
-		if (*isa).LastIncludedIndex >= lastLogIdx {
-			_state.nextLogArrayIdx = 0
-			_state.commitIndex = (*isa).LastIncludedIndex
-			_state.lastApplied = (*isa).LastIncludedIndex
-		} else {
-			var found, lastIncludedIdx = _state.findArrayIndexByLogIndex((*isa).LastIncludedIndex)
-			if found {
-				_state.copyLogsToBeginningOfRecord(lastIncludedIdx + 1)
-			}
-
-			if _state.commitIndex < (*isa).LastIncludedIndex {
-				_state.commitIndex = (*isa).LastIncludedIndex
-			}
-			if _state.lastApplied < (*isa).LastIncludedIndex {
-				_state.lastApplied = (*isa).LastIncludedIndex
-			}
-
-		}
-	*/
 
 	log.Trace("State: install snapshot ", (*isa).LastIncludedIndex)
 	return &InstallSnapshotResponse{_state.id, _state.currentTerm, true, (*isa).LastIncludedIndex, (*isa).LastIncludedTerm}
 }
 
-func (_state *stateImpl) getServerLastActionApplied(sid ServerID) int64 {
+func (_state *stateImpl) getClientLastActionApplied(sid ServerID) int64 {
 	_state.lock.Lock()
-	var result = _state.serverLastActionApplied[sid]
+	var result = _state.clientState[sid].lastActionApplied
 	_state.lock.Unlock()
 	return result
 }
 
-func (_state *stateImpl) updateServerLastActionApplied(sid ServerID, idx int64) {
+func (_state *stateImpl) updateClientLastActionApplied(sid ServerID, idx int64) {
 	_state.lock.Lock()
-	_state.serverLastActionApplied[sid] = idx
+	var previousState = _state.clientState[sid]
+	previousState.lastActionApplied = idx
+	_state.clientState[sid] = previousState
 	_state.lock.Unlock()
 }

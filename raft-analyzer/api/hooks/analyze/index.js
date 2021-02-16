@@ -23,10 +23,13 @@ let currentAnalysis = {
   violations: {
     electionSafety: [],
     stateMachineSafety: [],
-    leaderCompleteness: []
+    leaderCompleteness: [],
+    logMatching: []
   },
   appliedLogs: {},
-  mainEvents: []
+  mainEvents: [],
+  nodeStatus: {},
+  logHash: {}
 }
 const fieldsToSendToClient = ['lastLeaderTerm', 'lastCommittedLog', 'violations', 'mainEvents']
 
@@ -37,11 +40,15 @@ function resetAnalysis() {
     violations: {
       electionSafety: [],
       stateMachineSafety: [],
-      leaderCompleteness: []
+      leaderCompleteness: [],
+      leaderAppendOnly: [],
+      logMatching: []
     },
     addedLogs: {},
     appliedLogs: {},
-    mainEvents: []
+    mainEvents: [],
+    nodeStatus: {},
+    logHash: {}
   }
 }
 
@@ -71,13 +78,23 @@ async function runAnalysis() {
     const log = await sails.getDatastore().manager.collection(currentCollection).findOne({ i: idx })
     if (!log) finish = true
     else {
-      if (log.lu) currentAnalysis.mainEvents.push(log)
+      if (log.lu) {
+        currentAnalysis.logHash[log.n] = {}
+        currentAnalysis.nodeStatus[log.n] = { status: 'Follower', idx: log.i }
+        currentAnalysis.mainEvents.push(log)
+      }
 
-      if (log.bc) currentAnalysis.mainEvents.push(log)
+      if (log.bf) currentAnalysis.nodeStatus[log.n] = { status: 'Follower', idx: log.i }
+
+      if (log.bc) {
+        currentAnalysis.nodeStatus[log.n] = { status: 'Candidate', idx: log.i }
+        currentAnalysis.mainEvents.push(log)
+      }
 
       if (log.sd) currentAnalysis.mainEvents.push(log)
 
       if (log.bl) {
+        currentAnalysis.nodeStatus[log.n] = { status: 'Leader', idx: log.i }
         currentAnalysis.mainEvents.push(log)
         // Election Safety check
         // The logs are accessed in order, we expect the new leader terms to be ordered as well
@@ -95,13 +112,13 @@ async function runAnalysis() {
           const msg = log.n + ' became leader with no logs'
           sails.log.debug(logHeader + msg)
         }
-        if (currentAnalysis.addedLogs[log.n] < currentAnalysis.lastCommittedLog) {
+        if (currentAnalysis.addedLogs[log.n] && currentAnalysis.addedLogs[log.n].i < currentAnalysis.lastCommittedLog) {
           sails.log.warn(logHeader + 'Leader completeness violation')
-          sails.log.debug(logHeader + 'Last leader log (' + log.n + '): ' + currentAnalysis.addedLogs[log.n])
+          sails.log.debug(logHeader + 'Last leader log (' + log.n + '): ' + currentAnalysis.addedLogs[log.n].i)
           sails.log.debug(logHeader + 'Last committed log: ' + currentAnalysis.lastCommittedLog)
           currentAnalysis.violations.leaderCompleteness.push({
             lastCommittedLog: currentAnalysis.lastCommittedLog,
-            lastLeaderLog: currentAnalysis.addedLogs[log.n]
+            lastLeaderLog: currentAnalysis.addedLogs[log.n].i
           })
         }
 
@@ -113,8 +130,6 @@ async function runAnalysis() {
         if (currentAnalysis.appliedLogs[log.al.i]) {
          if (currentAnalysis.appliedLogs[log.al.i] !== log.al.l) {
           sails.log.warn(logHeader + 'State machine safety violation')
-          console.log(currentAnalysis.appliedLogs[log.al.i])
-          console.log(log.al.l)
           currentAnalysis.violations.stateMachineSafety.push({
             oldLog: currentAnalysis.appliedLogs[log.al.i],
             log: log.al.l
@@ -127,7 +142,43 @@ async function runAnalysis() {
         }
       }
 
-      if (log.adl) currentAnalysis.addedLogs[log.n] = log.adl
+      if (log.adl) {
+        currentAnalysis.addedLogs[log.n] = log.adl
+        if (!currentAnalysis.logHash[log.n]) currentAnalysis.logHash[log.n] = {}
+        if (!currentAnalysis.logHash[log.n][log.adl.t]) currentAnalysis.logHash[log.n][log.adl.t] = {}
+        if (!currentAnalysis.logHash[log.n][log.adl.t][log.adl.i]) currentAnalysis.logHash[log.n][log.adl.t][log.adl.i] = log.adl.h
+
+        for (let n in currentAnalysis.logHash) {
+          if (_.has(currentAnalysis.logHash[n], log.adl.t + '.' + log.adl.i) && currentAnalysis.logHash[n][log.adl.t][log.adl.i] !== log.adl.h) {
+            sails.log.warn(logHeader + 'Log matching violation, term: ' + log.adl.t + ', idx: ' + log.adl.i)
+            sails.log.debug(logHeader + 'Expected (' + n + '): ' + currentAnalysis.logHash[n][log.adl.t][log.adl.i])
+            sails.log.debug(logHeader + 'Found (' + log.n + '): ' + log.adl.h)
+            currentAnalysis.violations.logMatching.push({
+              lastHash: currentAnalysis.logHash[log.n][log.adl.t][log.adl.i],
+              log: log
+            })
+          }
+        }
+      }
+
+      // Leader append only check
+      if (log.rl) {
+        let newLogHash = {}
+        for (let t in currentAnalysis.logHash[log.n]) {
+          newLogHash[t] = {}
+          for (let i in currentAnalysis.logHash[log.n][t]) {
+            if (i < log.rl.si || i > log.rl.ei) newLogHash[t][i] = currentAnalysis.logHash[log.n][t][i]
+          }
+        }
+        currentAnalysis.logHash[log.n] = newLogHash
+
+        if (currentAnalysis.nodeStatus[log.n] === 'Leader') {
+        sails.log.warn(logHeader + 'Leader append only violation')
+        currentAnalysis.violations.leaderAppendOnly.push({
+          nodeStatus: currentAnalysis.nodeStatus[log.n],
+          log: log
+        })}
+      }
 
       idx += 1
     }
