@@ -827,15 +827,19 @@ func (_state *stateImpl) checkIfSnapshotShouldBeInstalled(isa *InstallSnapshotAr
 }
 
 func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) *InstallSnapshotResponse {
+	_state.lock.Lock()
 	log.Trace("Received install snapshot request")
 	if !_state.checkIfSnapshotShouldBeInstalled(isa) {
+		_state.lock.Unlock()
 		return &InstallSnapshotResponse{_state.id, _state.currentTerm, false, -1, -1}
 	}
 
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
 	if (*isa).LastIncludedIndex < lastLogIdx {
-		var _, lastIncludedArrIdx = _state.findArrayIndexByLogIndex((*isa).LastIncludedIndex)
-		log.Info("State - Removing logs: ", _state.logs[lastIncludedArrIdx].Idx, " ", _state.logs[_state.nextLogArrayIdx-1].Idx, " (InstallSnapshotRPC)")
+		var found, lastIncludedArrIdx = _state.findArrayIndexByLogIndex((*isa).LastIncludedIndex)
+		if found {
+			log.Info("State - Removing logs: ", _state.logs[lastIncludedArrIdx].Idx, " ", _state.logs[_state.nextLogArrayIdx-1].Idx, " (InstallSnapshotRPC)")
+		}
 	}
 
 	// Apply snapshot
@@ -854,6 +858,7 @@ func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) 
 	_state.lastApplied = (*isa).LastIncludedIndex
 
 	log.Trace("State: install snapshot ", (*isa).LastIncludedIndex)
+	_state.lock.Unlock()
 	return &InstallSnapshotResponse{_state.id, _state.currentTerm, true, (*isa).LastIncludedIndex, (*isa).LastIncludedTerm}
 }
 
