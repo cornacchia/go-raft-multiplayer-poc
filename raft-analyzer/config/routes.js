@@ -35,5 +35,7 @@ module.exports.routes = {
   'GET /state': { action: 'state/get' },
   'POST /setCollection': { action: 'logs/set-collection' },
   'POST /simulateLog': { action: 'logs/simulate-log' },
-  'POST /analyzeLogs': { action: 'logs/analyze' }
+  'POST /analyzeLogs': { action: 'logs/analyze' },
+  'GET /startTests': { action: 'test/start' },
+  'GET /stopTests': { action: 'test/stop' }
 };

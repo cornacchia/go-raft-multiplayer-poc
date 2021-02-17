@@ -48,12 +48,11 @@ async function assignIndexesToLogs(collection) {
     if (err) throw err
     if (doc) jobQueue.push(doc)
   })
-  
-  jobQueue.drain(() => {
-    loadingLogs = false
-    sails.log.info(logHeader + 'Done')
-    error = ""
-  })
+
+  await jobQueue.drain()
+  loadingLogs = false
+  sails.log.info(logHeader + 'Done')
+  error = ""
 }
 
 function parseTimestamp(line, obj) {
@@ -266,7 +265,7 @@ async function loadLogsIntoCollection(dirPath, collection) {
     }
   }
 
-  assignIndexesToLogs(collection)
+  await assignIndexesToLogs(collection)
 }
 
 async function loadLogs(dirPath, collection) {
@@ -291,7 +290,7 @@ async function loadLogs(dirPath, collection) {
     }
   }
 
-  loadLogsIntoCollection(dirPath, collection)
+  await loadLogsIntoCollection(dirPath, collection)
 }
 
 module.exports = function defineDbHook (sailsInstance) {

@@ -50,7 +50,8 @@ module.exports.datastores = {
     ***************************************************************************/
     adapter: 'sails-mongo',
     url: 'mongodb://localhost:27017/raft_analyzer',
-
+    connectTimeoutMS: 1000 * 60 * 5,
+    socketTimeoutMS: 1000 * 60 * 5
   },
 
 
