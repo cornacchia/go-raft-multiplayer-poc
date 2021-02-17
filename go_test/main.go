@@ -45,8 +45,8 @@ func newCommand(pkgToTest string, mode string, ports []string, idx int) {
 	openCmds[idx] = cmd
 	cmd.Start()
 	if err := cmd.Wait(); err != nil {
-		log.Debug("Error starting command ", cmd.Path, " ", cmd.Args)
-		log.Debug(err)
+		log.Trace("Error starting command ", cmd.Path, " ", cmd.Args)
+		log.Trace(err)
 	}
 }
 
@@ -59,9 +59,9 @@ func killProcess(i int, signal syscall.Signal) {
 
 func killAll(pkgToTest string) {
 	cmd := exec.Command("killall", "-SIGKILL", pkgToTest)
-	log.Debug("Killing all workers")
+	log.Trace("Killing all workers")
 	err := cmd.Run()
-	log.Debug("Killing finished with error: ", err)
+	log.Trace("Killing finished with error: ", err)
 }
 
 func analyzeNodeBehavior(node int) execStats {
@@ -130,9 +130,10 @@ func analyzeNodeBehavior(node int) execStats {
 		}
 	}
 	if lastTurn >= 0 {
-		log.Debug(fmt.Sprintf("Node %d: last turn %d\n", node, lastTurn))
+		log.Debug("Last turn: ", lastTurn)
 	}
-	log.Debug(fmt.Sprintf("Node %d: last received raft log %d\n", node, lastRaftLogReceived))
+	log.Debug("N. of actions: ", stats.nOfValues)
+	log.Debug("Last received raft log: ", lastRaftLogReceived)
 	stats.durationSeconds = (*stats.endTs).Sub((*stats.startTs)).Seconds()
 	return stats
 }
@@ -387,7 +388,7 @@ func testPackage(testMode string, pkgToTest string, start int, stop int, step in
 }
 
 func main() {
-	log.SetLevel(log.InfoLevel)
+	log.SetLevel(log.DebugLevel)
 	args := os.Args
 	if len(args) < 8 {
 		log.Fatal("Usage: go_test <dynamic | faulty | normal> <go_skeletons | go_wanderer | both> <repetitions> <test time> <start> <finish> <step> <result_file>")
