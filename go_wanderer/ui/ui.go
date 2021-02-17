@@ -68,30 +68,29 @@ func botBehavior(opt *uiOptions) {
 	currentTurn := <-(*opt).currentTurnUIChan
 	(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.REGISTER, currentTurn}}
 	for {
+		var clear = false
+		var newTurn int
+		for !clear {
+			time.Sleep(time.Millisecond * 100)
+			clear, newTurn = verifyClearToSend(opt, currentTurn)
+		}
 		direction = rand.Intn(5)
 		switch direction {
 		case 0:
-			if clear, newTurn := verifyClearToSend(opt, currentTurn); clear {
-				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.UP, newTurn}}
-				currentTurn = newTurn
-			}
+			(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.UP, newTurn}}
+			currentTurn = newTurn
 		case 1:
-			if clear, newTurn := verifyClearToSend(opt, currentTurn); clear {
-				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.RIGHT, newTurn}}
-				currentTurn = newTurn
-			}
+			(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.RIGHT, newTurn}}
+			currentTurn = newTurn
 		case 2:
-			if clear, newTurn := verifyClearToSend(opt, currentTurn); clear {
-				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.DOWN, newTurn}}
-				currentTurn = newTurn
-			}
+			(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.DOWN, newTurn}}
+			currentTurn = newTurn
 		case 3:
-			if clear, newTurn := verifyClearToSend(opt, currentTurn); clear {
-				(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.LEFT, newTurn}}
-				currentTurn = newTurn
-			}
+			(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.LEFT, newTurn}}
+			currentTurn = newTurn
 		}
-		time.Sleep(time.Millisecond * 100)
+		// Thinking about next move
+		time.Sleep(time.Millisecond * 1000)
 	}
 }
 

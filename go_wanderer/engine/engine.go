@@ -199,7 +199,11 @@ func run(opt *engineOptions) {
 	for {
 		select {
 		case <-(*opt).requestState:
-			(*opt).stateChan <- gameState
+			stateToSend := GameState{make(map[PlayerID]PlayerState)}
+			for key, value := range gameState.Players {
+				stateToSend.Players[key] = value
+			}
+			(*opt).stateChan <- stateToSend
 		case <-(*opt).snapshotRequestChan:
 			jsonGameState, _ := json.Marshal(gameState)
 			(*opt).snapshotResponseChan <- jsonGameState
