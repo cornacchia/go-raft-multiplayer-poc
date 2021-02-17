@@ -529,7 +529,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 	}
 
 	// At this point we can say that if the append entries request is empty
-	// then it is an heartbeat an so we can keep _state.currentLeader and _state.currentTerm updated
+	// then it is an heartbeat an so we can keep _state.currentLeader updated
 	_state.currentLeader = (*aea).LeaderID
 
 	// 3. If an existing entry conflicts with a new one (same index but different terms),
@@ -813,21 +813,14 @@ func (_state *stateImpl) handleInstallSnapshotResponse(isr *InstallSnapshotRespo
 	return _state.matchIndex[(*isr).Id]
 }
 
-func (_state *stateImpl) checkIfSnapshotShouldBeInstalled(isa *InstallSnapshotArgs) bool {
-	var result = true
-	if (*isa).Term < _state.currentTerm {
-		// Do not install snapshots for obsolete terms
-		result = false
-	}
-	return result
-}
-
 func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) *InstallSnapshotResponse {
 	_state.lock.Lock()
 	log.Trace("Received install snapshot request")
-	if !_state.checkIfSnapshotShouldBeInstalled(isa) {
+	if (*isa).Term < _state.currentTerm {
 		_state.lock.Unlock()
 		return &InstallSnapshotResponse{_state.id, _state.currentTerm, false, -1, -1}
+	} else if (*isa).Term > _state.currentTerm {
+		_state.currentTerm = (*isa).Term
 	}
 
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
