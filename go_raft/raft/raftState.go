@@ -80,7 +80,6 @@ type ServerID string
 
 // StateImpl are structures containing the state for all servers
 type stateImpl struct {
-	// TODO maybe we could aggregate all the server map into a map[ServerID]struct{...}
 	id                      ServerID
 	electionTimeoutStarted  bool
 	electionTimer           *time.Timer
@@ -259,29 +258,27 @@ func (_state *stateImpl) checkElectionTimeout() *time.Timer {
 
 func (_state *stateImpl) stopElectionTimeout() {
 	// Ensure the election timer is actually stopped and the channel empty
-	if !_state.electionTimer.Stop() {
-		select {
-		case <-_state.electionTimer.C:
-		default:
+	if _state.electionTimer != nil {
+		if !_state.electionTimer.Stop() {
+			select {
+			case <-_state.electionTimer.C:
+			default:
+			}
 		}
+		_state.electionTimeoutStarted = false
 	}
-	_state.electionTimeoutStarted = false
 }
 
 func (_state *stateImpl) handleRequestToVote(rva *RequestVoteArgs) *RequestVoteResponse {
 	var lastLogIdx, lastLogTerm = _state.getLastLogIdxTerm()
 	if _state.currentTerm > (*rva).Term {
 		return &RequestVoteResponse{_state.id, _state.currentTerm, false}
-	} else if (*rva).Term == _state.currentTerm && (_state.votedFor == "" || _state.votedFor == (*rva).CandidateID) && (*rva).LastLogTerm >= lastLogTerm && (*rva).LastLogIndex >= lastLogIdx {
-		_state.stopElectionTimeout()
-		log.Info("Become Follower")
-		_state.currentState = Follower
+	} else if _state.currentTerm < (*rva).Term {
 		_state.currentTerm = (*rva).Term
-		_state.votedFor = (*rva).CandidateID
-		_state.currentLeader = (*rva).CandidateID
-		return &RequestVoteResponse{_state.id, _state.currentTerm, true}
-	} else if (*rva).Term > _state.currentTerm {
-		// Our term is out of date, become follower
+	}
+
+	// At this point we know that (*rva).Term == _state.currentTerm
+	if (_state.votedFor == "" || _state.votedFor == (*rva).CandidateID) && (*rva).LastLogTerm >= lastLogTerm && (*rva).LastLogIndex >= lastLogIdx {
 		_state.stopElectionTimeout()
 		log.Info("Become Follower")
 		_state.currentState = Follower
@@ -494,23 +491,23 @@ func (_state *stateImpl) addNewNoopLog() {
 
 func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntriesResponse {
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
-	// Handle Candidate and Leader mode particular conditions
-	if _state.currentState != Follower {
-		if (*aea).Term >= _state.currentTerm {
-			// If AppendEntries RPC received from new leader: convert to follower
-			_state.stopElectionTimeout()
-			log.Info("Become Follower")
-			_state.currentState = Follower
-			_state.currentTerm = (*aea).Term
-			// _state.currentLeader = (*aea).LeaderID
-		} else {
-			return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
-		}
-	}
-
 	// 1. Reply false if rpc term < currentTerm
 	if (*aea).Term < _state.currentTerm {
 		return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
+	}
+
+	// Immediately update term if out of date
+	if (*aea).Term > _state.currentTerm {
+		_state.currentTerm = (*aea).Term
+	}
+
+	// At this point a Leader or Candidate should step down because the term is at least
+	// as up to date as their own (for Leaders this will be strictly greater)
+	if _state.currentState != Follower {
+		// If AppendEntries RPC received from new leader: convert to follower
+		_state.stopElectionTimeout()
+		log.Info("Become Follower")
+		_state.currentState = Follower
 	}
 
 	var prevLogIdx = -1
@@ -534,7 +531,6 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 	// At this point we can say that if the append entries request is empty
 	// then it is an heartbeat an so we can keep _state.currentLeader and _state.currentTerm updated
 	_state.currentLeader = (*aea).LeaderID
-	_state.currentTerm = (*aea).Term
 
 	// 3. If an existing entry conflicts with a new one (same index but different terms),
 	// delete the existing entry and all that follow it
