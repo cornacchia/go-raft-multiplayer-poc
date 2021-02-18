@@ -37,10 +37,8 @@ const (
 )
 
 type ConfigurationLog struct {
-	Id          ServerID
-	ConnMap     map[ServerID][2]bool
-	OldCount    int
-	NewCount    int
+	Add         bool
+	Server      ServerID
 	ChanApplied chan bool
 }
 
@@ -62,7 +60,7 @@ type RaftLog struct {
 }
 
 type snapshot struct {
-	serverConfiguration map[ServerID][2]bool
+	serverConfiguration map[ServerID]bool
 	oldServerCount      int
 	newServerCount      int
 	gameState           []byte
@@ -80,32 +78,37 @@ type ServerID string
 
 // StateImpl are structures containing the state for all servers
 type stateImpl struct {
-	id                      ServerID
-	electionTimeoutStarted  bool
-	electionTimer           *time.Timer
-	currentElectionVotesNew int
-	currentElectionVotesOld int
-	lastSentLogIndex        map[ServerID]int
-	currentLeader           ServerID
-	currentTerm             int
-	votedFor                ServerID
-	logs                    [logArrayCapacity]RaftLog
-	logHashes               [logArrayCapacity][32]byte
-	nextLogArrayIdx         int
-	lastSnapshot            *snapshot
-	currentState            instanceState
-	commitIndex             int
-	lastApplied             int
-	nextIndex               map[ServerID]int
-	matchIndex              map[ServerID]int
-	serverConfiguration     map[ServerID][2]bool
-	clientState             map[ServerID]clientStateStruct
-	newServerCount          int
-	oldServerCount          int
-	newServerResponseChan   map[ServerID]chan bool
-	lock                    *sync.Mutex
-	snapshotRequestChan     chan bool
-	snapshotResponseChan    chan []byte
+	id                          ServerID
+	electionTimeoutStarted      bool
+	electionTimer               *time.Timer
+	currentElectionVotes        int
+	lastSentLogIndex            map[ServerID]int
+	currentLeader               ServerID
+	currentTerm                 int
+	votedFor                    ServerID
+	logs                        [logArrayCapacity]RaftLog
+	logHashes                   [logArrayCapacity][32]byte
+	nextLogArrayIdx             int
+	lastSnapshot                *snapshot
+	currentState                instanceState
+	commitIndex                 int
+	lastApplied                 int
+	nextIndex                   map[ServerID]int
+	matchIndex                  map[ServerID]int
+	oldServerConfiguration      map[ServerID]bool
+	serverConfiguration         map[ServerID]bool
+	clientState                 map[ServerID]clientStateStruct
+	newServerCount              int
+	oldServerCount              int
+	newServerResponseChan       map[ServerID]chan bool
+	lock                        *sync.Mutex
+	snapshotRequestChan         chan bool
+	snapshotResponseChan        chan []byte
+	configurationQueue          []configurationAction
+	inConfigurationChange       bool
+	pendingConfigurationChanges int
+	unvotingServers             map[ServerID]configurationAction
+	lastConfigurationLog        int
 }
 
 func getRaftLogBytes(rl RaftLog) []byte {
@@ -117,10 +120,8 @@ func getRaftLogBytes(rl RaftLog) []byte {
 	binary.Write(buf, binary.LittleEndian, rl.Log.ActionId)
 	binary.Write(buf, binary.LittleEndian, rl.Log.Type)
 	binary.Write(buf, binary.LittleEndian, rl.Log.Action)
-	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.Id)
-	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.ConnMap)
-	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.OldCount)
-	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.NewCount)
+	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.Add)
+	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.Server)
 	return buf.Bytes()
 }
 
@@ -128,11 +129,11 @@ func raftLogToString(log RaftLog) string {
 	if log.Type == Game {
 		return fmt.Sprint(log.Log.Id, " ", log.Log.ActionId, " ", log.Log.Type, " ", log.Log.Action)
 	}
-	return fmt.Sprint(log.ConfigurationLog.Id, " ", log.ConfigurationLog.ConnMap, " ", log.ConfigurationLog.OldCount, " ", log.ConfigurationLog.NewCount)
+	return fmt.Sprint(log.ConfigurationLog.Add, " ", log.ConfigurationLog.Server)
 }
 
 func newGameRaftLog(idx int, term int, log GameLog) RaftLog {
-	var emptyCfgLog = ConfigurationLog{"", nil, 0, 0, nil}
+	var emptyCfgLog = ConfigurationLog{false, "", nil}
 	return RaftLog{idx, term, Game, log, emptyCfgLog}
 }
 
@@ -142,7 +143,7 @@ func newConfigurationRaftLog(idx int, term int, cfgLog ConfigurationLog) RaftLog
 }
 
 func newNoopRaftLog(idx int, term int) RaftLog {
-	var emptyCfgLog = ConfigurationLog{"", nil, 0, 0, nil}
+	var emptyCfgLog = ConfigurationLog{false, "", nil}
 	var emptyLog = GameLog{"", -1, "", []byte{}, nil}
 	return RaftLog{idx, term, Noop, emptyLog, emptyCfgLog}
 }
@@ -152,7 +153,6 @@ func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, 
 	var lastSentLogIndex = make(map[ServerID]int)
 	var nextIndex = make(map[ServerID]int)
 	var matchIndex = make(map[ServerID]int)
-	var serverConfiguration = make(map[ServerID][2]bool)
 	var clientState = make(map[ServerID]clientStateStruct)
 	var newServerResponseChan = make(map[ServerID]chan bool)
 	var lock = &sync.Mutex{}
@@ -160,7 +160,6 @@ func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, 
 		ServerID(id),
 		false,
 		nil,
-		0,
 		0,
 		lastSentLogIndex,
 		"",
@@ -175,14 +174,20 @@ func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, 
 		0,
 		nextIndex,
 		matchIndex,
-		serverConfiguration,
+		map[ServerID]bool{ServerID(id): true},
+		map[ServerID]bool{ServerID(id): true},
 		clientState,
 		0,
 		0,
 		newServerResponseChan,
 		lock,
 		snapshotRequestChan,
-		snapshotResponseChan}
+		snapshotResponseChan,
+		[]configurationAction{},
+		false,
+		0,
+		make(map[ServerID]configurationAction),
+		0}
 	return &state
 }
 
@@ -195,7 +200,7 @@ type state interface {
 	stopElectionTimeout()
 	handleRequestToVote(*RequestVoteArgs) *RequestVoteResponse
 	getElectionTimer() *time.Timer
-	updateElection(*RequestVoteResponse, bool, bool) bool
+	updateElection(*RequestVoteResponse) bool
 	winElection()
 	getAppendEntriesArgs(ServerID) *AppendEntriesArgs
 	handleAppendEntriesResponse(*AppendEntriesResponse) (int, bool)
@@ -210,7 +215,6 @@ type state interface {
 	getCommitIndex() int
 	addNewServer(ServerID)
 	removeServer(ServerID)
-	updateServerConfiguration(ServerID, [2]bool)
 	updateNewServerResponseChans(ServerID, chan bool)
 	removeNewServerResponseChan(ServerID)
 	getNewServerResponseChan(ServerID) chan bool
@@ -219,6 +223,13 @@ type state interface {
 	handleInstallSnapshotRequest(*InstallSnapshotArgs) *InstallSnapshotResponse
 	updateClientLastActionApplied(ServerID, int64)
 	getClientLastActionApplied(ServerID) int64
+	handleConfigurationRPC(configurationAction) (bool, configurationAction)
+	handleNextConfigurationChange() (bool, configurationAction)
+	addNewUnvotingServer(configurationAction)
+	removeUnvotingServerAction(ServerID) configurationAction
+	countConnections() int
+	unlockNextConfiguration()
+	serverInConfiguration(ServerID) bool
 }
 
 /* To start a new election a server:
@@ -231,9 +242,7 @@ func (_state *stateImpl) startElection() {
 	log.Info("Become Candidate: ", _state.currentTerm)
 	_state.currentState = Candidate
 	_state.votedFor = _state.id
-	// TODO verify that this is correct
-	_state.currentElectionVotesNew = 1
-	_state.currentElectionVotesOld = 1
+	_state.currentElectionVotes = 1
 }
 
 func (_state *stateImpl) prepareRequestVoteRPC() *RequestVoteArgs {
@@ -269,25 +278,35 @@ func (_state *stateImpl) stopElectionTimeout() {
 	}
 }
 
+func (_state *stateImpl) updateCurrentTerm(newTerm int) {
+	_state.currentTerm = newTerm
+	_state.votedFor = ""
+}
+
 func (_state *stateImpl) handleRequestToVote(rva *RequestVoteArgs) *RequestVoteResponse {
+	_state.lock.Lock()
 	var lastLogIdx, lastLogTerm = _state.getLastLogIdxTerm()
 	if _state.currentTerm > (*rva).Term {
+		log.Trace("Current term greater than Candidate term: ", _state.currentTerm, " ", (*rva).Term)
+		_state.lock.Unlock()
 		return &RequestVoteResponse{_state.id, _state.currentTerm, false}
 	} else if _state.currentTerm < (*rva).Term {
-		_state.currentTerm = (*rva).Term
+		_state.updateCurrentTerm((*rva).Term)
 	}
 
 	// At this point we know that (*rva).Term == _state.currentTerm
 	if (_state.votedFor == "" || _state.votedFor == (*rva).CandidateID) && (*rva).LastLogTerm >= lastLogTerm && (*rva).LastLogIndex >= lastLogIdx {
 		_state.stopElectionTimeout()
-		log.Info("Become Follower")
+		log.Info("Become Follower (handleRequestToVote)")
 		_state.currentState = Follower
-		_state.currentTerm = (*rva).Term
 		_state.votedFor = (*rva).CandidateID
 		_state.currentLeader = (*rva).CandidateID
+		_state.lock.Unlock()
 		return &RequestVoteResponse{_state.id, _state.currentTerm, true}
 	}
 
+	log.Trace("Already voted for: ", _state.votedFor, " or ", lastLogTerm, " > ", (*rva).LastLogTerm, " or ", lastLogIdx, " > ", (*rva).LastLogIndex)
+	_state.lock.Unlock()
 	return &RequestVoteResponse{_state.id, _state.currentTerm, false}
 }
 
@@ -295,28 +314,23 @@ func (_state *stateImpl) getElectionTimer() *time.Timer {
 	return _state.electionTimer
 }
 
-func (_state *stateImpl) updateElection(resp *RequestVoteResponse, old bool, new bool) bool {
+func (_state *stateImpl) updateElection(resp *RequestVoteResponse) bool {
 	_state.lock.Lock()
 	// If the node's current state is stale immediately revert to Follower state
 	if (*resp).Term > (_state.currentTerm) {
 		_state.stopElectionTimeout()
-		_state.currentElectionVotesNew = 0
-		_state.currentElectionVotesOld = 0
-		_state.currentTerm = (*resp).Term
-		log.Info("Become Follower")
+		_state.currentElectionVotes = 0
+		_state.updateCurrentTerm((*resp).Term)
+		log.Info("Become Follower (updateElection)")
 		_state.currentState = Follower
 		_state.lock.Unlock()
 		return false
 		// Only accept votes for the current term
 	} else if (*resp).Term == (_state.currentTerm) && (*resp).VoteGranted == true {
-		if old {
-			_state.currentElectionVotesOld++
-		}
-		if new {
-			_state.currentElectionVotesNew++
-		}
+		_state.currentElectionVotes++
 
-		if _state.checkMajority(_state.currentElectionVotesNew, _state.currentElectionVotesOld) {
+		log.Trace("Election votes: ", _state.currentElectionVotes, "/", len(_state.serverConfiguration))
+		if _state.currentElectionVotes > len(_state.serverConfiguration)/2 {
 			_state.lock.Unlock()
 			_state.winElection()
 			return true
@@ -330,8 +344,7 @@ func (_state *stateImpl) winElection() {
 	_state.lock.Lock()
 	log.Info("Become Leader: ", _state.currentTerm)
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
-	_state.currentElectionVotesOld = 0
-	_state.currentElectionVotesNew = 0
+	_state.currentElectionVotes = 0
 	_state.currentState = Leader
 	_state.currentLeader = _state.id
 	for id := range _state.nextIndex {
@@ -452,10 +465,28 @@ func (_state *stateImpl) addNewGameLog(msg GameLog) bool {
 	return true
 }
 
+func (_state *stateImpl) handleNewConfiguration(idx int, conf ConfigurationLog) {
+	// Keep last configuration
+	_state.oldServerConfiguration = make(map[ServerID]bool)
+	for key, val := range _state.serverConfiguration {
+		_state.oldServerConfiguration[key] = val
+	}
+
+	if conf.Add {
+		_state.serverConfiguration[conf.Server] = true
+	} else {
+		delete(_state.serverConfiguration, conf.Server)
+	}
+
+	_state.lastConfigurationLog = idx
+}
+
 func (_state *stateImpl) addNewConfigurationLog(conf ConfigurationLog) bool {
-	_state.lock.Lock()
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
 	var newLog = newConfigurationRaftLog(lastLogIdx+1, _state.currentTerm, conf)
+
+	_state.handleNewConfiguration(lastLogIdx+1, conf)
+
 	if _state.nextLogArrayIdx >= logArrayCapacity {
 		_state.takeSnapshot()
 	}
@@ -470,7 +501,6 @@ func (_state *stateImpl) addNewConfigurationLog(conf ConfigurationLog) bool {
 	_state.matchIndex[_state.id] = newLog.Idx
 	_state.lastSentLogIndex[_state.id] = newLog.Idx
 	_state.nextIndex[_state.id] = newLog.Idx + 1
-	_state.lock.Unlock()
 	return true
 }
 
@@ -490,23 +520,25 @@ func (_state *stateImpl) addNewNoopLog() {
 }
 
 func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntriesResponse {
+	_state.lock.Lock()
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
 	// 1. Reply false if rpc term < currentTerm
 	if (*aea).Term < _state.currentTerm {
+		_state.lock.Unlock()
 		return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
 	}
 
 	// Immediately update term if out of date
 	if (*aea).Term > _state.currentTerm {
-		_state.currentTerm = (*aea).Term
+		_state.updateCurrentTerm((*aea).Term)
 	}
 
 	// At this point a Leader or Candidate should step down because the term is at least
 	// as up to date as their own (for Leaders this will be strictly greater)
-	if _state.currentState != Follower {
+	if _state.currentState == Candidate {
 		// If AppendEntries RPC received from new leader: convert to follower
 		_state.stopElectionTimeout()
-		log.Info("Become Follower")
+		log.Info("Become Follower (handleAppendEntries)")
 		_state.currentState = Follower
 	}
 
@@ -519,10 +551,12 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 			// If we didn't find the previous log index it may be included in the last snapshot
 			// so we check if there exists a last snapshot and if it includes the previous log index
 			if _state.lastSnapshot == nil || (*_state.lastSnapshot).lastIncludedIndex < (*aea).PrevLogIndex {
+				_state.lock.Unlock()
 				return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
 			}
 		} else {
 			if _state.logs[prevLogIdx].Term != (*aea).PrevLogTerm {
+				_state.lock.Unlock()
 				return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
 			}
 		}
@@ -540,12 +574,14 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 	// Check if the node has enough log space for all the logs of the AppendEntriesRPC
 	if startNextIdx+len((*aea).Entries) >= logArrayCapacity {
 		if !_state.takeSnapshot() {
+			_state.lock.Unlock()
 			return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
 		}
 	}
 	_, prevLogIdx = _state.findArrayIndexByLogIndex((*aea).PrevLogIndex)
 	startNextIdx = prevLogIdx + 1
 	if startNextIdx+len((*aea).Entries) >= logArrayCapacity {
+		_state.lock.Unlock()
 		return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
 	}
 
@@ -557,14 +593,27 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 			_state.nextLogArrayIdx = nextIdx + 1
 			_state.logHashes[nextIdx] = _state.getLogHash(_state.logs[nextIdx])
 			log.Info("State - add raft log: ", _state.logs[nextIdx].Idx, " ", _state.logs[nextIdx].Term, " ", fmt.Sprintf("%x", _state.logHashes[nextIdx]))
+			if _state.logs[nextIdx].Type == Configuration {
+				_state.handleNewConfiguration(nextIdx, _state.logs[nextIdx].ConfigurationLog)
+			}
 		} else {
 			// If the terms conflict (different index or same index and different terms) remove all the remaining logs
 			if _state.logs[nextIdx].Idx != (*aea).Entries[i].Idx || _state.logs[nextIdx].Term != (*aea).Entries[i].Term {
 				log.Info("State - Removing logs: ", _state.logs[nextIdx].Idx, " ", _state.logs[_state.nextLogArrayIdx-1].Idx, " (AppendEntriesRPC)")
+				// If we are removing a configuration log we need to revert to the previous configuration
+				if _state.logs[nextIdx].Idx <= _state.lastConfigurationLog {
+					_state.serverConfiguration = make(map[ServerID]bool)
+					for key, val := range _state.oldServerConfiguration {
+						_state.serverConfiguration[key] = val
+					}
+				}
 				_state.logs[nextIdx] = (*aea).Entries[i]
 				_state.nextLogArrayIdx = nextIdx + 1
 				_state.logHashes[nextIdx] = _state.getLogHash(_state.logs[nextIdx])
 				log.Info("State - add raft log: ", _state.logs[nextIdx].Idx, " ", _state.logs[nextIdx].Term, " ", fmt.Sprintf("%x", _state.logHashes[nextIdx]))
+				if _state.logs[nextIdx].Type == Configuration {
+					_state.handleNewConfiguration(nextIdx, _state.logs[nextIdx].ConfigurationLog)
+				}
 			}
 			// Otherwise we should be confident that the logs are the same and need not be replaced
 		}
@@ -578,7 +627,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 			_state.commitIndex = (*aea).LeaderCommit
 		}
 	}
-
+	_state.lock.Unlock()
 	return &AppendEntriesResponse{_state.id, _state.currentTerm, true, lastLogIdx}
 }
 
@@ -586,10 +635,10 @@ func (_state *stateImpl) handleAppendEntriesResponse(aer *AppendEntriesResponse)
 	_state.lock.Lock()
 	if !(*aer).Success {
 		if (*aer).Term > _state.currentTerm {
-			log.Info("Become Follower")
+			log.Info("Become Follower (handleAppendEntriesRepsonse)")
 			_state.currentState = Follower
-			_state.currentTerm = (*aer).Term
-			// _state.currentLeader = (*aer).Id
+			_state.updateCurrentTerm((*aer).Term)
+			_state.currentLeader = (*aer).Id
 			_state.lock.Unlock()
 			return -1, false
 		}
@@ -607,8 +656,9 @@ func (_state *stateImpl) handleAppendEntriesResponse(aer *AppendEntriesResponse)
 	}
 	_state.nextIndex[(*aer).Id] = _state.lastSentLogIndex[(*aer).Id] + 1
 	_state.matchIndex[(*aer).Id] = _state.lastSentLogIndex[(*aer).Id]
+	var matchIndex = _state.matchIndex[(*aer).Id]
 	_state.lock.Unlock()
-	return _state.matchIndex[(*aer).Id], false
+	return matchIndex, false
 }
 
 func (_state *stateImpl) updateLastApplied() int {
@@ -628,16 +678,6 @@ func (_state *stateImpl) getLog(i int) RaftLog {
 	return _state.logs[i]
 }
 
-func (_state *stateImpl) checkMajority(newCount int, oldCount int) bool {
-	var oldMajority = true
-	var newMajority = newCount > ((*_state).newServerCount)/2
-	if (*_state).oldServerCount > 0 {
-		oldMajority = oldCount > ((*_state).oldServerCount)/2
-	}
-	// log.Trace(fmt.Sprintf("State check majority: new %d/%d, old %d/%d", newCount, (*_state).newServerCount, oldCount, (*_state).oldServerCount))
-	return newMajority && oldMajority
-}
-
 func (_state *stateImpl) checkCommits() {
 	_state.lock.Lock()
 	if len(_state.logs) < 1 {
@@ -651,20 +691,13 @@ func (_state *stateImpl) checkCommits() {
 			continue
 		}
 		// A majority of matchIndex[j] >= i
-		var replicatedFollowersNew = 0
-		var replicatedFollowersOld = 0
+		var replicatedFollowers = 0
 		for id := range _state.matchIndex {
-			conf, _ := _state.serverConfiguration[id]
 			if _state.matchIndex[id] >= _state.logs[i].Idx {
-				if conf[0] {
-					replicatedFollowersOld++
-				}
-				if conf[1] {
-					replicatedFollowersNew++
-				}
+				replicatedFollowers++
 			}
 		}
-		if _state.checkMajority(replicatedFollowersNew, replicatedFollowersOld) {
+		if replicatedFollowers > len(_state.serverConfiguration)/2 {
 			if _state.logs[i].Term == _state.currentTerm {
 				_state.commitIndex = _state.logs[i].Idx
 			}
@@ -698,34 +731,7 @@ func (_state *stateImpl) addNewServer(sid ServerID) {
 func (_state *stateImpl) removeServer(sid ServerID) {
 	_state.lock.Lock()
 	delete(_state.clientState, sid)
-	if _state.serverConfiguration[sid][0] {
-		_state.oldServerCount--
-	}
-	if _state.serverConfiguration[sid][1] {
-		_state.newServerCount--
-	}
 	delete(_state.serverConfiguration, sid)
-	_state.lock.Unlock()
-}
-
-func (_state *stateImpl) updateServerConfiguration(sid ServerID, conf [2]bool) {
-	_state.lock.Lock()
-	_state.serverConfiguration[sid] = conf
-	_state.newServerCount = 0
-	_state.oldServerCount = 0
-	for _, conf := range _state.serverConfiguration {
-		if conf[0] {
-			_state.oldServerCount++
-		}
-		if conf[1] {
-			_state.newServerCount++
-		}
-	}
-	log.Trace("State: Update server configuration ", _state.serverConfiguration)
-	log.Trace("State: new: ", _state.newServerCount, ", old: ", _state.oldServerCount)
-	if _, found := _state.clientState[sid]; !found {
-		_state.clientState[sid] = clientStateStruct{-1}
-	}
 	_state.lock.Unlock()
 }
 
@@ -748,7 +754,7 @@ func (_state *stateImpl) getNewServerResponseChan(id ServerID) chan bool {
 func (_state *stateImpl) copyLogsToBeginningOfRecord(startLog int) {
 	var restartIdx = 0
 	for startLog+restartIdx < _state.nextLogArrayIdx {
-		// log.Trace("Copy log from ", startLog+restartIdx, "(", _state.logs[startLog+restartIdx].Idx, ")", "to ", restartIdx)
+		log.Trace("Copy log from ", startLog+restartIdx, "(", _state.logs[startLog+restartIdx].Idx, ")", "to ", restartIdx)
 		_state.logs[restartIdx] = _state.logs[startLog+restartIdx]
 		_state.logHashes[restartIdx] = _state.logHashes[startLog+restartIdx]
 		restartIdx++
@@ -763,7 +769,7 @@ func (_state *stateImpl) takeSnapshot() bool {
 	if !found {
 		return false
 	}
-	// log.Trace("Taking snapshot (arr: ", lastAppliedIdx, ", idx: ", _state.logs[lastAppliedIdx].Idx, ", term: ", _state.logs[lastAppliedIdx].Term, ")")
+	log.Trace("Taking snapshot (arr: ", lastAppliedIdx, ", idx: ", _state.logs[lastAppliedIdx].Idx, ", term: ", _state.logs[lastAppliedIdx].Term, ")")
 	var newSnapshot = snapshot{
 		_state.serverConfiguration,
 		_state.oldServerCount,
@@ -797,10 +803,10 @@ func (_state *stateImpl) handleInstallSnapshotResponse(isr *InstallSnapshotRespo
 	_state.lock.Lock()
 	if !(*isr).Success {
 		if (*isr).Term >= _state.currentTerm {
-			log.Info("Become Follower")
+			log.Info("Become Follower (handleInstallSnapshotResponse)")
 			_state.currentState = Follower
-			_state.currentTerm = (*isr).Term
-			// _state.currentLeader = (*isr).Id
+			_state.updateCurrentTerm((*isr).Term)
+			_state.currentLeader = (*isr).Id
 		}
 		_state.lock.Unlock()
 		return -1
@@ -820,7 +826,7 @@ func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) 
 		_state.lock.Unlock()
 		return &InstallSnapshotResponse{_state.id, _state.currentTerm, false, -1, -1}
 	} else if (*isa).Term > _state.currentTerm {
-		_state.currentTerm = (*isa).Term
+		_state.updateCurrentTerm((*isa).Term)
 	}
 
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
@@ -864,4 +870,68 @@ func (_state *stateImpl) updateClientLastActionApplied(sid ServerID, idx int64) 
 	previousState.lastActionApplied = idx
 	_state.clientState[sid] = previousState
 	_state.lock.Unlock()
+}
+
+func (_state *stateImpl) handleConfigurationRPC(conf configurationAction) (bool, configurationAction) {
+	_state.lock.Lock()
+	_state.configurationQueue = append(_state.configurationQueue, conf)
+	_state.pendingConfigurationChanges++
+	log.Trace("Add configuration change to queue: ", _state.pendingConfigurationChanges)
+	_state.lock.Unlock()
+	return _state.handleNextConfigurationChange()
+}
+
+func (_state *stateImpl) handleNextConfigurationChange() (bool, configurationAction) {
+	_state.lock.Lock()
+	var result configurationAction
+	var ok = false
+	if !_state.inConfigurationChange && _state.pendingConfigurationChanges > 0 {
+		ok = true
+		_state.inConfigurationChange = true
+		result = _state.configurationQueue[0]
+		copy(_state.configurationQueue, _state.configurationQueue[1:])
+		_state.configurationQueue = _state.configurationQueue[:len(_state.configurationQueue)-1]
+		_state.addNewConfigurationLog(result.Msg)
+		_state.pendingConfigurationChanges--
+		log.Trace("Remove configuration change from queue: ", _state.pendingConfigurationChanges)
+	}
+	_state.lock.Unlock()
+	return ok, result
+}
+
+func (_state *stateImpl) addNewUnvotingServer(conf configurationAction) {
+	_state.lock.Lock()
+	_state.unvotingServers[conf.Msg.Server] = conf
+	_state.lock.Unlock()
+}
+
+func (_state *stateImpl) removeUnvotingServerAction(sid ServerID) configurationAction {
+	_state.lock.Lock()
+	newAction := _state.unvotingServers[sid]
+	delete(_state.unvotingServers, sid)
+	_state.lock.Unlock()
+	return newAction
+}
+
+func (_state *stateImpl) countConnections() int {
+	_state.lock.Lock()
+	var result = len(_state.serverConfiguration)
+	_state.lock.Unlock()
+	return result
+}
+
+func (_state *stateImpl) unlockNextConfiguration() {
+	_state.lock.Lock()
+	_state.inConfigurationChange = false
+	_state.lock.Unlock()
+}
+
+func (_state *stateImpl) serverInConfiguration(sid ServerID) bool {
+	_state.lock.Lock()
+	if _, found := _state.serverConfiguration[sid]; found {
+		_state.lock.Unlock()
+		return true
+	}
+	_state.lock.Unlock()
+	return false
 }

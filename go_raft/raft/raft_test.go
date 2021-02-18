@@ -91,7 +91,7 @@ func TestRVRespTrueIfCandidateLogUpToDateAndVotedForCandidate(t *testing.T) {
 func createRaftLogNOOPArray(from int, to int, term int) []RaftLog {
 	var result = []RaftLog{}
 	for idx := from; idx <= to; idx++ {
-		var emptyCfgLog = ConfigurationLog{"", nil, 0, 0, nil}
+		var emptyCfgLog = ConfigurationLog{false, "", nil}
 		var emptyLog = GameLog{"", -1, "", []byte{}, nil}
 		result = append(result, RaftLog{idx, term, Noop, emptyLog, emptyCfgLog})
 	}

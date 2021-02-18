@@ -41,7 +41,7 @@ type InstallSnapshotArgs struct {
 	LastIncludedIndex   int
 	LastIncludedTerm    int
 	Data                []byte
-	ServerConfiguration map[ServerID][2]bool
+	ServerConfiguration map[ServerID]bool
 	OldServerCount      int
 	NewServerCount      int
 	Hash                [32]byte
@@ -67,6 +67,16 @@ type ActionResponse struct {
 	LeaderID ServerID
 }
 
+type AddRemoveServerArgs struct {
+	Server ServerID
+	Add    bool
+}
+
+type AddRemoveServerResponse struct {
+	Success  bool
+	LeaderID ServerID
+}
+
 type RaftListener struct {
 	AppendEntriesArgsChan      chan *AppendEntriesArgs
 	AppendEntriesResponseChan  chan *AppendEntriesResponse
@@ -75,6 +85,7 @@ type RaftListener struct {
 	InstallSnapshotArgsChan    chan *InstallSnapshotArgs
 	InstallSnapshtResponseChan chan *InstallSnapshotResponse
 	MessageChan                chan gameAction
+	ConfigurationChan          chan configurationAction
 }
 
 func initRaftListener(lstOptions *options) *RaftListener {
@@ -85,7 +96,8 @@ func initRaftListener(lstOptions *options) *RaftListener {
 		(*lstOptions).requestVoteResponseChan,
 		(*lstOptions).installSnapshotArgsChan,
 		(*lstOptions).installSnapshotResponseChan,
-		(*lstOptions).msgChan}
+		(*lstOptions).msgChan,
+		(*lstOptions).confChan}
 }
 
 func (listener *RaftListener) AppendEntriesRPC(args *AppendEntriesArgs, reply *AppendEntriesResponse) error {
@@ -98,7 +110,6 @@ func (listener *RaftListener) AppendEntriesRPC(args *AppendEntriesArgs, reply *A
 	if len((*args).Entries) > 0 {
 		log.Info("Respond to AppendEntriesRPC: ", (*args).LeaderID, " ", (*args).PrevLogIndex, " ", reply)
 	}
-	// TODO handle timeout
 	return nil
 }
 
@@ -134,6 +145,20 @@ func (listener *RaftListener) InstallSnapshotRPC(args *InstallSnapshotArgs, repl
 	reply.LastIncludedIndex = repl.LastIncludedIndex
 	reply.LastIncludedTerm = repl.LastIncludedTerm
 	log.Info("Respond to InstallSnapshotRPC: ", (*args).Id, " ", repl.Success)
-	// TODO handle timeout
+	return nil
+}
+
+func (listener *RaftListener) AddRemoveServerRPC(args *AddRemoveServerArgs, reply *AddRemoveServerResponse) error {
+	chanApplied := make(chan bool, 1)
+	chanResponse := make(chan *AddRemoveServerResponse)
+	var act = configurationAction{
+		ConfigurationLog{args.Add, args.Server, chanApplied},
+		chanResponse}
+
+	listener.ConfigurationChan <- act
+	repl := <-chanResponse
+	reply.Success = repl.Success
+	reply.LeaderID = repl.LeaderID
+	log.Info("Respond to AddRemoveServerRPC: ", (*args).Server, " ", repl.Success)
 	return nil
 }

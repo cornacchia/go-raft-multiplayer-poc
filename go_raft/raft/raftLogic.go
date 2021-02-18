@@ -12,7 +12,6 @@ import (
 
 type RequestConnection struct {
 	Id          ServerID
-	State       [2]bool
 	Destination *sync.Map
 }
 
@@ -23,13 +22,16 @@ type RaftConnectionResponse struct {
 
 type RaftConnection struct {
 	Connection *rpc.Client
-	Old        bool
-	New        bool
 }
 
 type gameAction struct {
 	Msg          GameLog
 	ChanResponse chan *ActionResponse
+}
+
+type configurationAction struct {
+	Msg          ConfigurationLog
+	ChanResponse chan *AddRemoveServerResponse
 }
 
 type options struct {
@@ -54,19 +56,18 @@ type options struct {
 	// This is used to get responses from remote nodes when sending a InstallSnapshotRPC
 	myInstallSnapshotResponseChan chan *InstallSnapshotResponse
 	// This is used to receive messages from clients RPC
-	msgChan chan gameAction
+	msgChan  chan gameAction
+	confChan chan configurationAction
 	// This is used to send messages to the game engine
-	actionChan             chan GameLog
-	snapshotRequestChan    chan bool
-	snapshotResponseChan   chan []byte
-	snapshotInstallChan    chan []byte
-	connections            *sync.Map
-	numberOfNewConnections int
-	numberOfOldConnections int
-	unvotingConnections    *sync.Map
-	connectedChan          chan bool
-	connected              bool
-	requestConnectionChan  chan RequestConnection
+	actionChan            chan GameLog
+	snapshotRequestChan   chan bool
+	snapshotResponseChan  chan []byte
+	snapshotInstallChan   chan []byte
+	connections           *sync.Map
+	unvotingConnections   *sync.Map
+	connectedChan         chan bool
+	connected             bool
+	requestConnectionChan chan RequestConnection
 }
 
 // Start function for server logic
@@ -84,22 +85,20 @@ func Start(mode string, port string, otherServers []ServerID, actionChan chan Ga
 		make(chan *InstallSnapshotResponse),
 		make(chan *InstallSnapshotResponse),
 		make(chan gameAction),
+		make(chan configurationAction),
 		actionChan,
 		snapshotRequestChan,
 		snapshotResponseChan,
 		installSnapshotChan,
 		nil,
-		0,
-		0,
 		nil,
 		connectedChan,
 		len(otherServers) == 0,
 		make(chan RequestConnection)}
 	var raftListener = initRaftListener(newOptions)
 	startListeningServer(raftListener, port)
-	nodeConnections, num := ConnectToRaftServers(newOptions, newOptions._state.getID(), otherServers)
+	nodeConnections := ConnectToRaftServers(newOptions, newOptions._state.getID(), otherServers)
 	newOptions.connections = nodeConnections
-	newOptions.numberOfNewConnections = num
 	newOptions.unvotingConnections = &sync.Map{}
 	go ConnectionManager(newOptions, newOptions.requestConnectionChan)
 	go run(newOptions)
@@ -121,7 +120,7 @@ func ConnectionManager(opt *options, requestConnectionChan chan RequestConnectio
 						log.Trace("Main - Connection manager, attempt connection to ", newConnReq.Id)
 					}
 					ungoingConnections[newConnReq.Id] = true
-					go EnsureConnectionToServer(opt, newConnReq.Id, newConnReq.State, newConnReq.Destination, responseChan)
+					go EnsureConnectionToServer(opt, newConnReq.Id, newConnReq.Destination, responseChan)
 				}
 			} else {
 				if opt != nil {
@@ -130,7 +129,7 @@ func ConnectionManager(opt *options, requestConnectionChan chan RequestConnectio
 					log.Trace("Main - Connection manager, attempt connection to ", newConnReq.Id)
 				}
 				ungoingConnections[newConnReq.Id] = true
-				go EnsureConnectionToServer(opt, newConnReq.Id, newConnReq.State, newConnReq.Destination, responseChan)
+				go EnsureConnectionToServer(opt, newConnReq.Id, newConnReq.Destination, responseChan)
 			}
 		case connectedID := <-responseChan:
 			ungoingConnections[connectedID] = false
@@ -156,33 +155,28 @@ func ConnectToRaftServer(opt *options, serverPort ServerID, result chan *RaftCon
 	}
 }
 
-func ConnectToRaftServers(opt *options, myID ServerID, otherServers []ServerID) (*sync.Map, int) {
-	var num = 0
+func ConnectToRaftServers(opt *options, myID ServerID, otherServers []ServerID) *sync.Map {
 	const connectionTimeout time.Duration = 300
 	var establishedConnections sync.Map
 	responseChan := make(chan ServerID)
 
-	go EnsureConnectionToServer(opt, myID, [2]bool{false, true}, &establishedConnections, responseChan)
+	go EnsureConnectionToServer(opt, myID, &establishedConnections, responseChan)
 	for i := 0; i < len(otherServers); i++ {
-		go EnsureConnectionToServer(opt, otherServers[i], [2]bool{false, true}, &establishedConnections, responseChan)
+		go EnsureConnectionToServer(opt, otherServers[i], &establishedConnections, responseChan)
 	}
 
 	for i := 0; i < len(otherServers)+1; i++ {
 		select {
-		case serverID := <-responseChan:
-			// Mark new connections as NEW
-			if opt != nil {
-				(*opt)._state.updateServerConfiguration(serverID, [2]bool{false, true})
-			}
-			num++
+		case <-responseChan:
 		case <-time.After(time.Second * connectionTimeout):
 			log.Fatal("Timeout connecting to other nodes")
 		}
 	}
-	return &establishedConnections, num
+	return &establishedConnections
 }
 
 func CloseConnection(id ServerID, relevantConnections *sync.Map) {
+	log.Trace("Close connection with server: ", id)
 	if conn, found := (*relevantConnections).LoadAndDelete(id); found {
 		var raftConn = conn.(RaftConnection)
 		if raftConn.Connection != nil {
@@ -191,7 +185,7 @@ func CloseConnection(id ServerID, relevantConnections *sync.Map) {
 	}
 }
 
-func EnsureConnectionToServer(opt *options, serverPort ServerID, connState [2]bool, relevantConnections *sync.Map, responseChan chan ServerID) {
+func EnsureConnectionToServer(opt *options, serverPort ServerID, relevantConnections *sync.Map, responseChan chan ServerID) {
 	if opt != nil {
 		log.Debug("Raft - Ensure connection to server: ", serverPort)
 	} else {
@@ -209,7 +203,7 @@ func EnsureConnectionToServer(opt *options, serverPort ServerID, connState [2]bo
 				log.Trace("Raft - Ensure connection to server, try again: ", serverPort)
 			}
 		} else {
-			var newConnection = RaftConnection{(*resp).Connection, connState[0], connState[1]}
+			var newConnection = RaftConnection{(*resp).Connection}
 			relevantConnections.Store((*resp).Id, newConnection)
 			connected = true
 		}
@@ -243,9 +237,10 @@ func sendRequestVoteRPCs(opt *options, requestVoteArgs *RequestVoteArgs) {
 			case <-requestVoteCall.Done:
 				if requestVoteResponse.Id == "" {
 					log.Debug("RequestVoteRPC: Removing unresponsive connection ", id, " ", requestVoteResponse)
-					// (*opt).connections.LoadAndDelete(id)
 					CloseConnection(id, (*opt).connections)
-					(*opt).requestConnectionChan <- RequestConnection{id, [2]bool{raftConn.Old, raftConn.New}, (*opt).connections}
+					if (*opt)._state.serverInConfiguration(id) {
+						(*opt).requestConnectionChan <- RequestConnection{id, (*opt).connections}
+					}
 				} else {
 					(*opt).myRequestVoteResponseChan <- &requestVoteResponse
 				}
@@ -258,48 +253,21 @@ func sendRequestVoteRPCs(opt *options, requestVoteArgs *RequestVoteArgs) {
 	})
 }
 
-func countConnections(opt *options) int {
-	return (*opt).numberOfNewConnections + (*opt).numberOfOldConnections
-}
-
-func checkConnectionsToRemove(opt *options, connMap map[ServerID][2]bool) {
-	// Only remove connections when they are no longer in the connection map (old or new)
-	(*(*opt).connections).Range(func(id interface{}, connection interface{}) bool {
-		if _, found := connMap[id.(ServerID)]; !found {
-			log.Trace("Disconnected:", id)
-			CloseConnection(id.(ServerID), (*opt).connections)
-			(*opt)._state.removeServer(id.(ServerID))
-		}
-		return true
-	})
-}
-
-func checkConnectionsToAdd(opt *options, connMap map[ServerID][2]bool) {
-	for id, state := range connMap {
-		var connection, found = (*opt).connections.Load(id)
-		if found {
-			// If the node is already connected, just update status (OLD, NEW)
-			var conn = connection.(RaftConnection)
-			conn.Old = state[0]
-			conn.New = state[1]
-			(*(*opt).connections).Store(id, conn)
-		} else {
-			log.Debug("Check connections to add, request connection to ", id)
-			(*opt).requestConnectionChan <- RequestConnection{id, state, (*opt).connections}
-			(*opt)._state.updateServerConfiguration(id, [2]bool{state[0], state[1]})
-		}
+func addConnection(opt *options, id ServerID) {
+	log.Trace("Add connection to server: ", id)
+	if _, found := (*opt).connections.Load(id); !found {
+		(*opt).requestConnectionChan <- RequestConnection{id, (*opt).connections}
 	}
 }
 
 func checkNewConfigurations(opt *options, appEntrArgs *AppendEntriesArgs) {
 	for _, raftLog := range (*appEntrArgs).Entries {
 		if raftLog.Type == Configuration {
-			(*opt).numberOfNewConnections = raftLog.ConfigurationLog.NewCount
-			(*opt).numberOfOldConnections = raftLog.ConfigurationLog.OldCount
-			log.Trace("Updating node configuration (idx: ", raftLog.Idx, ", old: ", (*opt).numberOfOldConnections, ", new: ", (*opt).numberOfNewConnections, ")")
-			log.Trace(raftLog.ConfigurationLog.ConnMap)
-			checkConnectionsToAdd(opt, raftLog.ConfigurationLog.ConnMap)
-			checkConnectionsToRemove(opt, raftLog.ConfigurationLog.ConnMap)
+			if raftLog.ConfigurationLog.Add {
+				addConnection(opt, raftLog.ConfigurationLog.Server)
+			} else {
+				CloseConnection(raftLog.ConfigurationLog.Server, (*opt).connections)
+			}
 		}
 	}
 }
@@ -308,12 +276,9 @@ func installSnapshot(opt *options, isa *InstallSnapshotArgs) {
 	var installSnapshotResponse = (*opt)._state.handleInstallSnapshotRequest(isa)
 	if (*installSnapshotResponse).Success {
 		(*opt).snapshotInstallChan <- (*isa).Data
-		(*opt).numberOfNewConnections = (*isa).NewServerCount
-		(*opt).numberOfOldConnections = (*isa).OldServerCount
-		log.Trace("Updating node configuration (SNAPSHOT, old: ", (*opt).numberOfOldConnections, ", new: ", (*opt).numberOfNewConnections, ")")
-		log.Trace((*isa).ServerConfiguration)
-		checkConnectionsToAdd(opt, (*isa).ServerConfiguration)
-		checkConnectionsToRemove(opt, (*isa).ServerConfiguration)
+		for id, _ := range (*isa).ServerConfiguration {
+			addConnection(opt, id)
+		}
 	}
 	(*opt).installSnapshotResponseChan <- installSnapshotResponse
 }
@@ -327,61 +292,63 @@ func handleClientMessages(opt *options) {
 		case Candidate:
 			act.ChanResponse <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
 		case Leader:
-			if act.Msg.Type == "Connect" {
-				log.Trace("Received request to connect ", act.Msg.Id)
-				// Connect to new node and add it to the unvotingConnections map
-				go func() {
-					if ServerID(act.Msg.Id) == (*opt)._state.getID() {
-						(*opt)._state.updateNewServerResponseChans(ServerID(act.Msg.Id), act.Msg.ChanApplied)
-						promoteUnvotingConnection(opt, (*opt)._state.getID())
-					} else {
-						// Check if this is a reconnection after a node failure
-						if _, found := (*opt).connections.LoadAndDelete(ServerID(act.Msg.Id)); found {
-							(*opt)._state.removeServer(ServerID(act.Msg.Id))
-						}
-						(*opt).requestConnectionChan <- RequestConnection{ServerID(act.Msg.Id), [2]bool{false, false}, (*opt).unvotingConnections}
-						(*opt)._state.updateServerConfiguration(ServerID(act.Msg.Id), [2]bool{false, false})
-						(*opt)._state.updateNewServerResponseChans(ServerID(act.Msg.Id), act.Msg.ChanApplied)
-					}
-				}()
-				go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
-			} else if act.Msg.Type == "Disconnect" {
-				log.Trace("Received request to disconnect")
-				connMap, oldCount, newCount := startConfigurationChange(opt, ServerID(act.Msg.Id), false)
-				var ok = (*opt)._state.addNewConfigurationLog(ConfigurationLog{ServerID(act.Msg.Id), connMap, oldCount, newCount, nil})
+			// Handle player game action (i.e. movement)
+			if act.Msg.ActionId > (*opt)._state.getClientLastActionApplied(ServerID(act.Msg.Id)) {
+				// In this case the action is new
+				var ok = (*opt)._state.addNewGameLog(act.Msg)
 				if ok {
-					(*opt)._state.updateNewServerResponseChans(ServerID(act.Msg.Id), act.Msg.ChanApplied)
 					sendAppendEntriesRPCs(opt)
 					go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
 				}
 			} else {
-				// Handle player game action (i.e. movement)
-				if act.Msg.ActionId > (*opt)._state.getClientLastActionApplied(ServerID(act.Msg.Id)) {
-					// In this case the action is new
-					var ok = (*opt)._state.addNewGameLog(act.Msg)
-					if ok {
-						sendAppendEntriesRPCs(opt)
-						go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
-					}
-				} else {
-					// The action has already been applied, respond immediately (cft. Raft paper section 8 p.13)
-					// Note: this only prevents actions to be applied twice, i.e. it will work with snapshots
-					// because the counter will be updated naturally when new messages arrive
-					go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
-					act.Msg.ChanApplied <- true
+				// The action has already been applied, respond immediately (cft. Raft paper section 8 p.13)
+				// Note: this only prevents actions to be applied twice, i.e. it will work with snapshots
+				// because the counter will be updated naturally when new messages arrive
+				go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
+				act.Msg.ChanApplied <- true
+			}
+		}
+	}
+}
+
+func handleConfigurationMessages(opt *options) {
+	for {
+		conf := <-(*opt).confChan
+		switch (*opt)._state.getState() {
+		case Follower:
+			log.Trace("Follower: refuse connection: ", conf.Msg.Server, " new leader: ", (*opt)._state.getCurrentLeader())
+			conf.ChanResponse <- &AddRemoveServerResponse{false, (*opt)._state.getCurrentLeader()}
+		case Candidate:
+			log.Trace("Candidate: refuse connection: ", conf.Msg.Server, " new leader: ", (*opt)._state.getCurrentLeader())
+			conf.ChanResponse <- &AddRemoveServerResponse{false, (*opt)._state.getCurrentLeader()}
+		case Leader:
+			log.Trace("Raft - Received configuration message: ", conf.Msg)
+			if conf.Msg.Add {
+				// Check if this is a reconnection after a node failure
+				if _, found := (*opt).connections.LoadAndDelete(conf.Msg.Server); found {
+					(*opt)._state.removeServer(ServerID(conf.Msg.Server))
+				}
+				(*opt).requestConnectionChan <- RequestConnection{conf.Msg.Server, (*opt).unvotingConnections}
+				// If it is a connection request store it for when the server will be up to date
+				(*opt)._state.addNewUnvotingServer(conf)
+			} else {
+				// Otherwise immediately add it to the queue
+				ok, conf := (*opt)._state.handleConfigurationRPC(conf)
+				if ok {
+					go handleResponseToConfigurationMessage(opt, conf.Msg.ChanApplied, conf.ChanResponse)
 				}
 			}
 		}
 	}
 }
 
-func promoteUnvotingConnection(opt *options, id ServerID) {
-	(*opt)._state.updateServerConfiguration(id, [2]bool{false, true})
-	connMap, oldCount, newCount := startConfigurationChange(opt, id, true)
-	var ok = (*opt)._state.addNewConfigurationLog(ConfigurationLog{id, connMap, oldCount, newCount, nil})
+func promoteUnvotingConnection(opt *options, id ServerID, conn RaftConnection) {
+	connectionAction := (*opt)._state.removeUnvotingServerAction(id)
+	ok, conf := (*opt)._state.handleConfigurationRPC(connectionAction)
 	if ok {
-		sendAppendEntriesRPCs(opt)
+		go handleResponseToConfigurationMessage(opt, conf.Msg.ChanApplied, conf.ChanResponse)
 	}
+	(*opt).connections.Store(id, conn)
 }
 
 func handleAppendEntriesRPCResponses(opt *options) {
@@ -392,13 +359,13 @@ func handleAppendEntriesRPCResponses(opt *options) {
 			var matchIndex, snapshot = (*opt)._state.handleAppendEntriesResponse(appendEntriesResponse)
 
 			// Check if unvoting member should be promoted to voting
-			var _, found = (*opt).unvotingConnections.Load((*appendEntriesResponse).Id)
+			var conn, found = (*opt).unvotingConnections.LoadAndDelete((*appendEntriesResponse).Id)
 
 			if snapshot {
 				sendInstallSnapshotRPC(opt, found, (*appendEntriesResponse).Id)
 			}
 			if found && matchIndex >= (*opt)._state.getCommitIndex() {
-				promoteUnvotingConnection(opt, (*appendEntriesResponse).Id)
+				promoteUnvotingConnection(opt, (*appendEntriesResponse).Id, conn.(RaftConnection))
 			}
 		}
 	}
@@ -411,15 +378,10 @@ func handleInstallSnapshotResponses(opt *options) {
 			var matchIndex = (*opt)._state.handleInstallSnapshotResponse(installSnapshotResponse)
 
 			// Check if unvoting member should be promoted to voting
-			var _, found = (*opt).unvotingConnections.Load((*installSnapshotResponse).Id)
+			var conn, found = (*opt).unvotingConnections.LoadAndDelete((*installSnapshotResponse).Id)
 
 			if found && matchIndex >= (*opt)._state.getCommitIndex() {
-				(*opt)._state.updateServerConfiguration((*installSnapshotResponse).Id, [2]bool{false, true})
-				connMap, oldCount, newCount := startConfigurationChange(opt, (*installSnapshotResponse).Id, true)
-				var ok = (*opt)._state.addNewConfigurationLog(ConfigurationLog{(*installSnapshotResponse).Id, connMap, oldCount, newCount, nil})
-				if ok {
-					sendAppendEntriesRPCs(opt)
-				}
+				promoteUnvotingConnection(opt, (*installSnapshotResponse).Id, conn.(RaftConnection))
 			}
 		}
 	}
@@ -455,7 +417,7 @@ func handleFollower(opt *options) {
 		if (*opt).mode == "Node" || (*opt).connected {
 			(*opt)._state.startElection()
 			// Issue requestvoterpc in parallel to other servers
-			if countConnections(opt) > 1 {
+			if (*opt)._state.countConnections() > 1 {
 				var requestVoteArgs = (*opt)._state.prepareRequestVoteRPC()
 				sendRequestVoteRPCs(opt, requestVoteArgs)
 			} else {
@@ -493,12 +455,8 @@ func handleCandidate(opt *options) {
 	// Receive a response to an issued RequestVoteRPC
 	case reqVoteResponse := <-(*opt).myRequestVoteResponseChan:
 		// log.Trace("Received RequestVoteRPC response from: ", (*reqVoteResponse).Id)
-		var connection, found = (*(*opt).connections).Load((*reqVoteResponse).Id)
-		if found {
-			var conn = connection.(RaftConnection)
-			if becomeLeader := (*opt)._state.updateElection(reqVoteResponse, conn.Old, conn.New); becomeLeader {
-				sendAppendEntriesRPCs(opt)
-			}
+		if becomeLeader := (*opt)._state.updateElection(reqVoteResponse); becomeLeader {
+			sendAppendEntriesRPCs(opt)
 		}
 	case <-(*electionTimeoutTimer).C:
 		(*opt)._state.stopElectionTimeout()
@@ -524,10 +482,12 @@ func appendEntriesRPCAction(opt *options, appendEntriesArgs *AppendEntriesArgs, 
 				log.Debug("AppendEntriesRPC: Removing unresponsive connection ", id, " - ", appendEntriesResponse)
 				if unvoting {
 					CloseConnection(id, (*opt).unvotingConnections)
-					(*opt).requestConnectionChan <- RequestConnection{id, [2]bool{raftConn.Old, raftConn.New}, (*opt).unvotingConnections}
+					(*opt).requestConnectionChan <- RequestConnection{id, (*opt).unvotingConnections}
 				} else {
 					CloseConnection(id, (*opt).connections)
-					(*opt).requestConnectionChan <- RequestConnection{id, [2]bool{raftConn.Old, raftConn.New}, (*opt).connections}
+					if (*opt)._state.serverInConfiguration(id) {
+						(*opt).requestConnectionChan <- RequestConnection{id, (*opt).connections}
+					}
 				}
 			} else {
 				(*opt).myAppendEntriesResponseChan <- &appendEntriesResponse
@@ -589,10 +549,12 @@ func sendInstallSnapshotRPC(opt *options, unvoting bool, id ServerID) {
 					log.Debug("InstallSnapshotRPC: Removing unresponsive connection ", id, " ", installSnapshotResponse)
 					if unvoting {
 						CloseConnection(id, (*opt).unvotingConnections)
-						(*opt).requestConnectionChan <- RequestConnection{id, [2]bool{raftConn.Old, raftConn.New}, (*opt).unvotingConnections}
+						(*opt).requestConnectionChan <- RequestConnection{id, (*opt).unvotingConnections}
 					} else {
 						CloseConnection(id, (*opt).connections)
-						(*opt).requestConnectionChan <- RequestConnection{id, [2]bool{raftConn.Old, raftConn.New}, (*opt).connections}
+						if (*opt)._state.serverInConfiguration(id) {
+							(*opt).requestConnectionChan <- RequestConnection{id, (*opt).connections}
+						}
 					}
 				} else {
 					(*opt).myInstallSnapshotResponseChan <- &installSnapshotResponse
@@ -614,67 +576,14 @@ func handleResponseToMessage(opt *options, chanApplied chan bool, chanResponse c
 	}
 }
 
-func startConfigurationChange(opt *options, newID ServerID, add bool) (map[ServerID][2]bool, int, int) {
-	log.Trace("Start configuration change")
-	var newCount = 0
-	var oldCount = 0
-	var connectionMap = map[ServerID][2]bool{}
-	// Remove new connection from unvoting connection list
-	var newConnection RaftConnection
-	if add && newID != (*opt)._state.getID() {
-		var conn, _ = (*(*opt).unvotingConnections).LoadAndDelete(newID)
-		newConnection = conn.(RaftConnection)
+func handleResponseToConfigurationMessage(opt *options, chanApplied chan bool, chanResponse chan *AddRemoveServerResponse) {
+	const handleResponseTimeout = 500
+	select {
+	case <-chanApplied:
+		chanResponse <- &AddRemoveServerResponse{true, (*opt)._state.getCurrentLeader()}
+	case <-time.After(time.Millisecond * handleResponseTimeout):
+		log.Warning("Timeout waiting for action to be applied")
 	}
-	if add && newID == (*opt)._state.getID() {
-		var conn, _ = (*(*opt).connections).LoadAndDelete(newID)
-		newConnection = conn.(RaftConnection)
-	}
-
-	// Mark all previous connections as OLD, NEW
-	(*(*opt).connections).Range(func(id interface{}, connection interface{}) bool {
-		var connID = id.(ServerID)
-		var conn = connection.(RaftConnection)
-		// If we are removing the connection don't mark it as NEW
-		if add || connID != newID {
-			conn.New = true
-			newCount++
-		} else {
-			conn.New = false
-		}
-		conn.Old = true
-		oldCount++
-		(*(*opt).connections).Store(id, conn)
-		connectionMap[id.(ServerID)] = [2]bool{conn.Old, conn.New}
-		return true
-	})
-	if add {
-		// Mark new connection as NEW
-		(*(*opt).connections).Store(newID, RaftConnection{newConnection.Connection, false, true})
-		connectionMap[newID] = [2]bool{false, true}
-		newCount++
-	}
-
-	return connectionMap, oldCount, newCount
-}
-
-func finishConfigurationChange(opt *options, add bool) (map[ServerID][2]bool, int) {
-	log.Trace("Finish configuration change")
-	var newCount = 0
-	var connectionMap = map[ServerID][2]bool{}
-	// Remove new connection from unvoting connection list
-	// Mark all connections as NEW
-	(*(*opt).connections).Range(func(id interface{}, connection interface{}) bool {
-		var conn = connection.(RaftConnection)
-		if conn.New {
-			conn.Old = false
-			connectionMap[id.(ServerID)] = [2]bool{false, true}
-			newCount++
-			(*(*opt).connections).Store(id, conn)
-		}
-		return true
-	})
-
-	return connectionMap, newCount
 }
 
 func handleLeader(opt *options) {
@@ -714,18 +623,12 @@ func applyLog(opt *options, raftLog RaftLog) {
 			// What if we received these logs as followers i.e. in append entries RPC and THEN we became leader?
 			raftLog.Log.ChanApplied <- true
 		} else if raftLog.Type == Configuration {
-			// If a configuration change raftLog is committed (OLD, NEW configuration), generate its closure
-			if raftLog.ConfigurationLog.OldCount > 0 {
-				var add = raftLog.ConfigurationLog.OldCount < raftLog.ConfigurationLog.NewCount
-				connMap, newCount := finishConfigurationChange(opt, add)
-				var appliedChan = (*opt)._state.getNewServerResponseChan(raftLog.ConfigurationLog.Id)
-				(*opt)._state.addNewConfigurationLog(ConfigurationLog{raftLog.ConfigurationLog.Id, connMap, 0, newCount, appliedChan})
-			} else if raftLog.ConfigurationLog.OldCount == 0 {
-				if raftLog.ConfigurationLog.ChanApplied != nil {
-					raftLog.ConfigurationLog.ChanApplied <- true
-				}
-				checkConnectionsToRemove(opt, raftLog.ConfigurationLog.ConnMap)
-				(*opt)._state.removeNewServerResponseChan(raftLog.ConfigurationLog.Id)
+			if raftLog.ConfigurationLog.ChanApplied != nil {
+				raftLog.ConfigurationLog.ChanApplied <- true
+			}
+			(*opt)._state.unlockNextConfiguration()
+			if !raftLog.ConfigurationLog.Add {
+				CloseConnection(raftLog.ConfigurationLog.Server, (*opt).connections)
 			}
 		}
 	}
@@ -739,13 +642,22 @@ func checkLogsToApply(opt *options) {
 	}
 }
 
+func checkConfigurationsToStart(opt *options) {
+	ok, conf := (*opt)._state.handleNextConfigurationChange()
+	if ok {
+		go handleResponseToConfigurationMessage(opt, conf.Msg.ChanApplied, conf.ChanResponse)
+	}
+}
+
 func run(opt *options) {
 	go handleClientMessages(opt)
 	go handleAppendEntriesRPCResponses(opt)
 	go handleInstallSnapshotResponses(opt)
+	go handleConfigurationMessages(opt)
 	for {
 		// First check if there are logs to apply to the state machine
 		checkLogsToApply(opt)
+		checkConfigurationsToStart(opt)
 		switch (*opt)._state.getState() {
 		case Follower:
 			handleFollower(opt)
