@@ -104,6 +104,7 @@ type stateImpl struct {
 	lock                        *sync.Mutex
 	snapshotRequestChan         chan bool
 	snapshotResponseChan        chan []byte
+	installSnapshotChan         chan []byte
 	configurationQueue          []configurationAction
 	inConfigurationChange       bool
 	pendingConfigurationChanges int
@@ -149,7 +150,7 @@ func newNoopRaftLog(idx int, term int) RaftLog {
 }
 
 // NewState returns an empty state, only used once at the beginning
-func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, snapshotResponseChan chan []byte) *stateImpl {
+func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, snapshotResponseChan chan []byte, installSnapshotChan chan []byte) *stateImpl {
 	var lastSentLogIndex = make(map[ServerID]int)
 	var nextIndex = make(map[ServerID]int)
 	var matchIndex = make(map[ServerID]int)
@@ -183,6 +184,7 @@ func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, 
 		lock,
 		snapshotRequestChan,
 		snapshotResponseChan,
+		installSnapshotChan,
 		[]configurationAction{},
 		false,
 		0,
@@ -815,8 +817,9 @@ func (_state *stateImpl) handleInstallSnapshotResponse(isr *InstallSnapshotRespo
 	_state.nextIndex[(*isr).Id] = (*isr).LastIncludedIndex + 1
 
 	_state.matchIndex[(*isr).Id] = (*isr).LastIncludedIndex
+	var matchIndex = _state.matchIndex[(*isr).Id]
 	_state.lock.Unlock()
-	return _state.matchIndex[(*isr).Id]
+	return matchIndex
 }
 
 func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) *InstallSnapshotResponse {
@@ -827,6 +830,11 @@ func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) 
 		return &InstallSnapshotResponse{_state.id, _state.currentTerm, false, -1, -1}
 	} else if (*isa).Term > _state.currentTerm {
 		_state.updateCurrentTerm((*isa).Term)
+	}
+
+	if (*isa).LastIncludedIndex <= _state.lastApplied {
+		_state.lock.Unlock()
+		return &InstallSnapshotResponse{_state.id, _state.currentTerm, true, (*isa).LastIncludedIndex, (*isa).LastIncludedTerm}
 	}
 
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
@@ -851,6 +859,7 @@ func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) 
 	_state.nextLogArrayIdx = 0
 	_state.commitIndex = (*isa).LastIncludedIndex
 	_state.lastApplied = (*isa).LastIncludedIndex
+	_state.installSnapshotChan <- (*isa).Data
 
 	log.Trace("State: install snapshot ", (*isa).LastIncludedIndex)
 	_state.lock.Unlock()

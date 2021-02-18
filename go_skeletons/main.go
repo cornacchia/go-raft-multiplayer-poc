@@ -67,13 +67,8 @@ func connectionPool(opt *options) {
 	}
 }
 
-func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, changeConnectionChan chan raft.ServerID, msg engine.GameLog, timestamp int64, currentConnection raft.ServerID, opt *options) {
+func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, changeConnectionChan chan raft.ServerID, msg engine.GameLog, timestamp int64, currentConnection raft.ServerID, opt *options, actionDoneChannel chan bool) {
 	var waitTime time.Duration = 1000
-	if call == nil {
-		time.Sleep(time.Millisecond * 300)
-		(*opt).actionChan <- msg
-		return
-	}
 	select {
 	case <-call.Done:
 		if !(*response).Applied {
@@ -85,19 +80,20 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, changeC
 				(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, (*opt).connections}
 				changeConnectionChan <- (*opt).id
 			}
-			time.Sleep(time.Millisecond * 300)
-			// Send again
-			(*opt).actionChan <- msg
-		} else if (*opt).mode == "Test" {
-			var now = getNowMs()
-			log.Info("Main - Action time: ", (now - timestamp))
+			actionDoneChannel <- false
+		} else {
+			if (*opt).mode == "Test" {
+				var now = getNowMs()
+				log.Info("Main - Action time: ", (now - timestamp), " - ", msg.ActionId)
+			}
+			actionDoneChannel <- true
 		}
+
 	case <-time.After(time.Millisecond * waitTime):
 		if (*opt).mode == "Test" {
-			log.Info("Main - Action dropped - ", currentConnection, " - ", msg)
+			log.Info("Main - Action dropped - ", currentConnection, " - ", msg.ActionId)
 		}
 		changeConnectionChan <- ""
-		(*opt).actionChan <- msg
 	}
 }
 
@@ -141,23 +137,16 @@ func handleConfigurationResponse(call *rpc.Call, response *raft.AddRemoveServerR
 func manageActions(opt *options) {
 	currentConnection := (*opt).firstLeader
 	changeConnectionChan := make(chan raft.ServerID)
+	var actions []engine.GameLog
+	var clearToSend = true
+	actionDoneChannel := make(chan bool)
 	for {
 		select {
 		case msg := <-(*opt).actionChan:
-			var timestamp = getNowMs()
-			var actionResponse raft.ActionResponse
-			var jsonAction, _ = json.Marshal(msg.Action)
-			var actionArgs = raft.ActionArgs{string(msg.Id), msg.ActionId, msg.Type, jsonAction}
-			var conn, found = (*(*opt).connections).Load(currentConnection)
-			if !found {
-				(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, (*opt).connections}
-				go handleActionResponse(nil, nil, changeConnectionChan, msg, timestamp, currentConnection, opt)
-				(*opt).requestNewServerIDChan <- true
-				currentConnection = <-(*opt).getNewServerIDChan
+			if len(actions) < 256 {
+				actions = append(actions, msg)
 			} else {
-				var raftConn = conn.(raft.RaftConnection)
-				actionCall := raftConn.Connection.Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
-				go handleActionResponse(actionCall, &actionResponse, changeConnectionChan, msg, timestamp, currentConnection, opt)
+				log.Debug("Too many actions, drop one")
 			}
 		case msg := <-(*opt).configurationChan:
 			var configurationResponse raft.AddRemoveServerResponse
@@ -185,6 +174,31 @@ func manageActions(opt *options) {
 			var _, found = (*(*opt).connections).Load(currentConnection)
 			if !found {
 				(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, (*opt).connections}
+			}
+		case done := <-actionDoneChannel:
+			clearToSend = true
+			if done && len(actions) > 0 {
+				copy(actions, actions[1:])
+				actions = actions[:len(actions)-1]
+			}
+		case <-time.After(time.Millisecond * 20):
+			if clearToSend && len(actions) > 0 {
+				clearToSend = false
+				var msg = actions[0]
+				var timestamp = getNowMs()
+				var actionResponse raft.ActionResponse
+				var jsonAction, _ = json.Marshal(msg.Action)
+				var actionArgs = raft.ActionArgs{string(msg.Id), msg.ActionId, msg.Type, jsonAction}
+				var conn, found = (*(*opt).connections).Load(currentConnection)
+				if !found {
+					(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, (*opt).connections}
+					(*opt).requestNewServerIDChan <- true
+					currentConnection = <-(*opt).getNewServerIDChan
+				} else {
+					var raftConn = conn.(raft.RaftConnection)
+					actionCall := raftConn.Connection.Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
+					go handleActionResponse(actionCall, &actionResponse, changeConnectionChan, msg, timestamp, currentConnection, opt, actionDoneChannel)
+				}
 			}
 		}
 	}

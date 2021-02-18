@@ -74,7 +74,7 @@ type options struct {
 func Start(mode string, port string, otherServers []ServerID, actionChan chan GameLog, connectedChan chan bool, snapshotRequestChan chan bool, snapshotResponseChan chan []byte, installSnapshotChan chan []byte) *sync.Map {
 	var newOptions = &options{
 		mode,
-		newState(port, otherServers, snapshotRequestChan, snapshotResponseChan),
+		newState(port, otherServers, snapshotRequestChan, snapshotResponseChan, installSnapshotChan),
 		make(chan *AppendEntriesArgs),
 		make(chan *AppendEntriesResponse),
 		make(chan *AppendEntriesResponse),
@@ -359,12 +359,13 @@ func handleAppendEntriesRPCResponses(opt *options) {
 			var matchIndex, snapshot = (*opt)._state.handleAppendEntriesResponse(appendEntriesResponse)
 
 			// Check if unvoting member should be promoted to voting
-			var conn, found = (*opt).unvotingConnections.LoadAndDelete((*appendEntriesResponse).Id)
+			var _, found = (*opt).unvotingConnections.Load((*appendEntriesResponse).Id)
 
 			if snapshot {
 				sendInstallSnapshotRPC(opt, found, (*appendEntriesResponse).Id)
 			}
 			if found && matchIndex >= (*opt)._state.getCommitIndex() {
+				var conn, _ = (*opt).unvotingConnections.LoadAndDelete((*appendEntriesResponse).Id)
 				promoteUnvotingConnection(opt, (*appendEntriesResponse).Id, conn.(RaftConnection))
 			}
 		}
@@ -378,9 +379,11 @@ func handleInstallSnapshotResponses(opt *options) {
 			var matchIndex = (*opt)._state.handleInstallSnapshotResponse(installSnapshotResponse)
 
 			// Check if unvoting member should be promoted to voting
-			var conn, found = (*opt).unvotingConnections.LoadAndDelete((*installSnapshotResponse).Id)
+			var _, found = (*opt).unvotingConnections.Load((*installSnapshotResponse).Id)
 
+			// Immediately promote to voting if snapshot installed correctly
 			if found && matchIndex >= (*opt)._state.getCommitIndex() {
+				var conn, _ = (*opt).unvotingConnections.LoadAndDelete((*installSnapshotResponse).Id)
 				promoteUnvotingConnection(opt, (*installSnapshotResponse).Id, conn.(RaftConnection))
 			}
 		}
@@ -582,7 +585,7 @@ func handleResponseToConfigurationMessage(opt *options, chanApplied chan bool, c
 	case <-chanApplied:
 		chanResponse <- &AddRemoveServerResponse{true, (*opt)._state.getCurrentLeader()}
 	case <-time.After(time.Millisecond * handleResponseTimeout):
-		log.Warning("Timeout waiting for action to be applied")
+		log.Warning("Timeout waiting for configuration to be applied")
 	}
 }
 
