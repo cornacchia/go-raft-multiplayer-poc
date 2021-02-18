@@ -163,8 +163,10 @@ func applyAction(state *GameState, playerID PlayerID, action ActionImpl) {
 		// Register new player
 		var newPosition = generateDeterministicPlayerStartingPosition(playerID)
 		(*state).Players[playerID] = PlayerState{getDeterministicPlayerSprite(playerID), newPosition}
+	case DISCONNECT:
+		// Remove player from game
+		delete((*state).Players, playerID)
 	}
-
 }
 
 func run(opt *engineOptions) {
