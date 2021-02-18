@@ -61,8 +61,6 @@ type RaftLog struct {
 
 type snapshot struct {
 	serverConfiguration map[ServerID]bool
-	oldServerCount      int
-	newServerCount      int
 	gameState           []byte
 	lastIncludedIndex   int
 	lastIncludedTerm    int
@@ -98,8 +96,6 @@ type stateImpl struct {
 	oldServerConfiguration      map[ServerID]bool
 	serverConfiguration         map[ServerID]bool
 	clientState                 map[ServerID]clientStateStruct
-	newServerCount              int
-	oldServerCount              int
 	newServerResponseChan       map[ServerID]chan bool
 	lock                        *sync.Mutex
 	snapshotRequestChan         chan bool
@@ -178,8 +174,6 @@ func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, 
 		map[ServerID]bool{ServerID(id): true},
 		map[ServerID]bool{ServerID(id): true},
 		clientState,
-		0,
-		0,
 		newServerResponseChan,
 		lock,
 		snapshotRequestChan,
@@ -521,6 +515,24 @@ func (_state *stateImpl) addNewNoopLog() {
 	_state.nextIndex[_state.id] = newLog.Idx + 1
 }
 
+func (_state *stateImpl) purgeEntriesFromSnapshottedLogs(aea *AppendEntriesArgs) {
+	var lastSnapshotIndex = _state.lastSnapshot.lastIncludedIndex
+	var elementsToRemove = 0
+	for i := 0; i < len((*aea).Entries); i++ {
+		if (*aea).Entries[i].Idx <= lastSnapshotIndex {
+			elementsToRemove++
+		} else {
+			break
+		}
+	}
+	if elementsToRemove > 0 {
+		(*aea).PrevLogIndex = (*aea).Entries[elementsToRemove-1].Idx
+		(*aea).PrevLogTerm = (*aea).Entries[elementsToRemove-1].Term
+	}
+	copy((*aea).Entries, (*aea).Entries[elementsToRemove:])
+	(*aea).Entries = (*aea).Entries[:len((*aea).Entries)-elementsToRemove]
+}
+
 func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntriesResponse {
 	_state.lock.Lock()
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
@@ -579,12 +591,14 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 			_state.lock.Unlock()
 			return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
 		}
-	}
-	_, prevLogIdx = _state.findArrayIndexByLogIndex((*aea).PrevLogIndex)
-	startNextIdx = prevLogIdx + 1
-	if startNextIdx+len((*aea).Entries) >= logArrayCapacity {
-		_state.lock.Unlock()
-		return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
+		_state.purgeEntriesFromSnapshottedLogs(aea)
+		_, prevLogIdx = _state.findArrayIndexByLogIndex((*aea).PrevLogIndex)
+		startNextIdx = prevLogIdx + 1
+		if startNextIdx+len((*aea).Entries) >= logArrayCapacity {
+			_state.lock.Unlock()
+			return &AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx}
+		}
+
 	}
 
 	// At this point we should be confident that we have enough space for the logs
@@ -774,8 +788,6 @@ func (_state *stateImpl) takeSnapshot() bool {
 	log.Trace("Taking snapshot (arr: ", lastAppliedIdx, ", idx: ", _state.logs[lastAppliedIdx].Idx, ", term: ", _state.logs[lastAppliedIdx].Term, ")")
 	var newSnapshot = snapshot{
 		_state.serverConfiguration,
-		_state.oldServerCount,
-		_state.newServerCount,
 		currentGameState,
 		_state.logs[lastAppliedIdx].Idx,
 		_state.logs[lastAppliedIdx].Term,
@@ -795,8 +807,6 @@ func (_state *stateImpl) prepareInstallSnapshotRPC() *InstallSnapshotArgs {
 		lastSnapshot.lastIncludedTerm,
 		lastSnapshot.gameState,
 		lastSnapshot.serverConfiguration,
-		lastSnapshot.oldServerCount,
-		lastSnapshot.newServerCount,
 		lastSnapshot.hash}
 	return &newInstallSnapshotArgs
 }
@@ -848,8 +858,6 @@ func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) 
 	// Apply snapshot
 	var newSnapshot = snapshot{
 		(*isa).ServerConfiguration,
-		(*isa).OldServerCount,
-		(*isa).NewServerCount,
 		(*isa).Data,
 		(*isa).LastIncludedIndex,
 		(*isa).LastIncludedTerm,

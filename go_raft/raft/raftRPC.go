@@ -42,8 +42,6 @@ type InstallSnapshotArgs struct {
 	LastIncludedTerm    int
 	Data                []byte
 	ServerConfiguration map[ServerID]bool
-	OldServerCount      int
-	NewServerCount      int
 	Hash                [32]byte
 }
 

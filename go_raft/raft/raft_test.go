@@ -14,7 +14,7 @@ func TestSetup(t *testing.T) {
 
 // Reply false if RPC term is less than currentTerm
 func TestRVRespFalseIfRPCTermLessThanCurrentTerm(t *testing.T) {
-	var state = newState("6666", []ServerID{"6667"}, nil, nil)
+	var state = newState("6666", []ServerID{"6667"}, nil, nil, nil)
 	var requestToVote = RequestVoteArgs{5, "6667", 0, 0}
 	(*state).currentTerm = 6
 
@@ -27,9 +27,9 @@ func TestRVRespFalseIfRPCTermLessThanCurrentTerm(t *testing.T) {
 
 // Reply false if a vote was already casted for this election
 func TestRVRespFalseIfAlreadyVoted(t *testing.T) {
-	var state = newState("6666", []ServerID{"6667", "6668"}, nil, nil)
+	var state = newState("6666", []ServerID{"6667", "6668"}, nil, nil, nil)
 	var requestToVote = RequestVoteArgs{5, "6667", 3, 3}
-	(*state).currentTerm = 4
+	(*state).currentTerm = 5
 	(*state).votedFor = "6668"
 
 	var response = (*state).handleRequestToVote(&requestToVote)
@@ -41,7 +41,7 @@ func TestRVRespFalseIfAlreadyVoted(t *testing.T) {
 
 // Reply false if a Candidate's log is not as up to date as the receiver's log
 func TestRVRespFalseIfCandidateLogOutOfDate(t *testing.T) {
-	var state = newState("6666", []ServerID{"6667", "6668"}, nil, nil)
+	var state = newState("6666", []ServerID{"6667", "6668"}, nil, nil, nil)
 	var requestToVote = RequestVoteArgs{5, "6667", 1, 1}
 	(*state).currentTerm = 4
 	(*state).addNewNoopLog()
@@ -57,7 +57,7 @@ func TestRVRespFalseIfCandidateLogOutOfDate(t *testing.T) {
 
 // Reply true in votedFor null and Candidate's log as up to date as receiver's log
 func TestRVRespTrueIfCandidateLogUpToDateAndVotedForNull(t *testing.T) {
-	var state = newState("6666", []ServerID{"6667", "6668"}, nil, nil)
+	var state = newState("6666", []ServerID{"6667", "6668"}, nil, nil, nil)
 	var requestToVote = RequestVoteArgs{5, "6667", 1, 1}
 	(*state).currentTerm = 1
 	(*state).addNewNoopLog() // Idx: 0
@@ -72,7 +72,7 @@ func TestRVRespTrueIfCandidateLogUpToDateAndVotedForNull(t *testing.T) {
 
 // Reply true if already voted for this Candidate and log is up to date
 func TestRVRespTrueIfCandidateLogUpToDateAndVotedForCandidate(t *testing.T) {
-	var state = newState("6666", []ServerID{"6667", "6668"}, nil, nil)
+	var state = newState("6666", []ServerID{"6667", "6668"}, nil, nil, nil)
 	var requestToVote = RequestVoteArgs{5, "6667", 1, 1}
 	(*state).currentTerm = 1
 	(*state).addNewNoopLog() // Idx: 0
@@ -101,7 +101,7 @@ func createRaftLogNOOPArray(from int, to int, term int) []RaftLog {
 // Reply false if term < currentTerm
 // This applies to all node states
 func TestAERespFalseIfTermLessThanCurrentTerm(t *testing.T) {
-	var state = newState("6666", []ServerID{"6667", "6668"}, nil, nil)
+	var state = newState("6666", []ServerID{"6667", "6668"}, nil, nil, nil)
 	var appendEntries = AppendEntriesArgs{4, "6667", 3, 3, createRaftLogNOOPArray(4, 6, 3), 3}
 	(*state).currentTerm = 5
 
@@ -115,7 +115,7 @@ func TestAERespFalseIfTermLessThanCurrentTerm(t *testing.T) {
 // Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
 // In this case the term and index are different
 func TestAERespFalseIfNoMatchingPrevLogIndexPrevLogTermDifferentTermAndIndex(t *testing.T) {
-	var state = newState("6666", []ServerID{"6667", "6668"}, nil, nil)
+	var state = newState("6666", []ServerID{"6667", "6668"}, nil, nil, nil)
 	var appendEntries = AppendEntriesArgs{4, "6667", 3, 3, createRaftLogNOOPArray(4, 6, 3), 3}
 	(*state).currentTerm = 1
 	(*state).addNewNoopLog()
@@ -130,7 +130,7 @@ func TestAERespFalseIfNoMatchingPrevLogIndexPrevLogTermDifferentTermAndIndex(t *
 // Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
 // In this case only the term is different
 func TestAERespFalseIfNoMatchingPrevLogIndexPrevLogTermDifferentTerm(t *testing.T) {
-	var state = newState("6666", []ServerID{"6667", "6668"}, nil, nil)
+	var state = newState("6666", []ServerID{"6667", "6668"}, nil, nil, nil)
 	var appendEntries = AppendEntriesArgs{4, "6667", 3, 3, createRaftLogNOOPArray(4, 6, 3), 3}
 	(*state).currentTerm = 2
 	copy((*state).logs[:], createRaftLogNOOPArray(0, 3, 2))
@@ -145,7 +145,7 @@ func TestAERespFalseIfNoMatchingPrevLogIndexPrevLogTermDifferentTerm(t *testing.
 
 // If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it
 func TestAEDeleteConflictingEntries(t *testing.T) {
-	var state = newState("6666", []ServerID{"6667", "6668"}, nil, nil)
+	var state = newState("6666", []ServerID{"6667", "6668"}, nil, nil, nil)
 	var appendEntries = AppendEntriesArgs{2, "6667", 1, 1, createRaftLogNOOPArray(2, 4, 2), 3}
 	(*state).currentTerm = 1
 	copy((*state).logs[:], createRaftLogNOOPArray(0, 3, 1))
@@ -186,7 +186,8 @@ func TestAEDeleteConflictingEntries(t *testing.T) {
 func TestAETakeSnapshot(t *testing.T) {
 	var snapshotRequestChan = make(chan bool)
 	var snapshotResponseChan = make(chan []byte)
-	var state = newState("6666", []ServerID{"6667", "6668"}, snapshotRequestChan, snapshotResponseChan)
+	var installSnapshotChan = make(chan []byte)
+	var state = newState("6666", []ServerID{"6667", "6668"}, snapshotRequestChan, snapshotResponseChan, installSnapshotChan)
 	var appendEntries = AppendEntriesArgs{2, "6667", 1022, 2, createRaftLogNOOPArray(1023, 1025, 2), 1022}
 	(*state).currentTerm = 2
 	copy((*state).logs[:], createRaftLogNOOPArray(0, 1022, 2))
@@ -196,6 +197,10 @@ func TestAETakeSnapshot(t *testing.T) {
 	go func() {
 		<-snapshotRequestChan
 		snapshotResponseChan <- []byte{}
+	}()
+
+	go func() {
+		<-installSnapshotChan
 	}()
 
 	var response = (*state).handleAppendEntries(&appendEntries)
@@ -240,7 +245,7 @@ func TestAETakeSnapshot(t *testing.T) {
 
 // If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 func TestAECommitIndexUpdateMinLeaderCommit(t *testing.T) {
-	var state = newState("6666", []ServerID{"6667", "6668"}, nil, nil)
+	var state = newState("6666", []ServerID{"6667", "6668"}, nil, nil, nil)
 	var appendEntries = AppendEntriesArgs{2, "6667", 1, 1, createRaftLogNOOPArray(2, 4, 2), 3}
 	(*state).currentTerm = 1
 	copy((*state).logs[:], createRaftLogNOOPArray(0, 3, 1))
@@ -259,7 +264,7 @@ func TestAECommitIndexUpdateMinLeaderCommit(t *testing.T) {
 }
 
 func TestAECommitIndexUpdateMinLastLog(t *testing.T) {
-	var state = newState("6666", []ServerID{"6667", "6668"}, nil, nil)
+	var state = newState("6666", []ServerID{"6667", "6668"}, nil, nil, nil)
 	var appendEntries = AppendEntriesArgs{2, "6667", 1, 1, createRaftLogNOOPArray(2, 4, 2), 6}
 	(*state).currentTerm = 1
 	copy((*state).logs[:], createRaftLogNOOPArray(0, 3, 1))
@@ -273,6 +278,65 @@ func TestAECommitIndexUpdateMinLastLog(t *testing.T) {
 	}
 	if (*state).commitIndex != 4 {
 		t.Log("Node should have updated its commit index")
+		t.Fail()
+	}
+}
+
+func TestAETakeSnapshotCornerCase1(t *testing.T) {
+	var snapshotRequestChan = make(chan bool)
+	var snapshotResponseChan = make(chan []byte)
+	var installSnapshotChan = make(chan []byte)
+	var state = newState("6666", []ServerID{"6667", "6668"}, snapshotRequestChan, snapshotResponseChan, installSnapshotChan)
+	var appendEntries = AppendEntriesArgs{2, "6667", 1022, 2, createRaftLogNOOPArray(1015, 1025, 2), 1022}
+	(*state).currentTerm = 2
+	copy((*state).logs[:], createRaftLogNOOPArray(0, 1022, 2))
+	(*state).lastApplied = 1019
+	(*state).nextLogArrayIdx = 1023
+
+	go func() {
+		<-snapshotRequestChan
+		snapshotResponseChan <- []byte{}
+	}()
+
+	go func() {
+		<-installSnapshotChan
+	}()
+
+	var response = (*state).handleAppendEntries(&appendEntries)
+	if !response.Success {
+		t.Log("No reason to refuse this AppendEntriesRPC, term is up to date, prevLogIndex and term present")
+		t.Fail()
+	}
+	if (*state).lastSnapshot == nil {
+		t.Log("Node should have taken a snapshot")
+		t.Fail()
+	}
+	if (*state).logs[0].Idx != 1020 || (*state).logs[0].Term != 2 {
+		t.Log("Unexpected log term or index: 1020 != ", (*state).logs[0].Idx)
+		t.Fail()
+	}
+	if (*state).logs[1].Idx != 1021 || (*state).logs[1].Term != 2 {
+		t.Log("Unexpected log term or index: 1021 != ", (*state).logs[1].Idx)
+		t.Fail()
+	}
+	if (*state).logs[2].Idx != 1022 || (*state).logs[2].Term != 2 {
+		t.Log("Unexpected log term or index: 1022 != ", (*state).logs[2].Idx)
+		t.Fail()
+	}
+	if (*state).logs[3].Idx != 1023 || (*state).logs[2].Term != 2 {
+		t.Log("Unexpected log term or index: 1023 != ", (*state).logs[3].Idx)
+		t.Fail()
+	}
+	if (*state).logs[4].Idx != 1024 || (*state).logs[2].Term != 2 {
+		t.Log("Unexpected log term or index: 1024 != ", (*state).logs[4].Idx)
+		t.Fail()
+	}
+	if (*state).logs[5].Idx != 1025 || (*state).logs[2].Term != 2 {
+		t.Log("Unexpected log term or index: 1025 != ", (*state).logs[5].Idx)
+		t.Fail()
+	}
+	if (*state).nextLogArrayIdx != 6 {
+		t.Log("Unexpected nextLogArrayIdx: 6 != ", (*state).nextLogArrayIdx)
 		t.Fail()
 	}
 }
