@@ -29,6 +29,7 @@ type options struct {
 	requestConnectionChan  chan raft.RequestConnection
 	requestNewServerIDChan chan bool
 	getNewServerIDChan     chan raft.ServerID
+	removedFromGameChan    chan bool
 }
 
 func checkError(err error) {
@@ -192,6 +193,9 @@ func manageActions(opt *options) {
 		case done := <-actionDoneChannel:
 			clearToSend = true
 			if done && len(actions) > 0 {
+				if actions[0].Action.Action == engine.DISCONNECT {
+					(*opt).removedFromGameChan <- true
+				}
 				copy(actions, actions[1:])
 				actions = actions[:len(actions)-1]
 			}
@@ -291,6 +295,7 @@ func main() {
 	var requestConnectionChan = make(chan raft.RequestConnection)
 	var requestNewServerIDChan = make(chan bool)
 	var getNewServerIDChan = make(chan raft.ServerID)
+	var removedFromGameChan = make(chan bool)
 
 	stateReqChan, stateChan, actionChan = engine.Start(playerID, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan, currentTurnEngineChan)
 
@@ -309,7 +314,8 @@ func main() {
 		mode,
 		requestConnectionChan,
 		requestNewServerIDChan,
-		getNewServerIDChan}
+		getNewServerIDChan,
+		removedFromGameChan}
 	go connectionPool(&opt)
 	go raft.ConnectionManager(nil, requestConnectionChan)
 	go manageActions(&opt)
@@ -332,6 +338,8 @@ func main() {
 	connectedChan <- true
 	<-termChan
 	log.Info("Shutting down")
+	uiActionChan <- engine.GameLog{playerID, ui.GetActionID(), "Disconnect", engine.ActionImpl{engine.DISCONNECT, 0}}
+	<-removedFromGameChan
 	uiConfChan <- false
 	select {
 	case <-mainDisconnectedChan:

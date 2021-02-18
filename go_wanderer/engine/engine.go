@@ -185,6 +185,9 @@ func applyAction(state *GameState, playerID PlayerID, action ActionImpl, opt *en
 		if playerID == (*opt).playerID {
 			(*opt).currentTurnChan <- (*state).Players[playerID].LastActionTurn
 		}
+	case DISCONNECT:
+		// Remove player from game
+		delete((*state).Players, playerID)
 	}
 	//log.Info(stateToString(state))
 	changed, turn := checkIfTurnChanged(opt, state)
