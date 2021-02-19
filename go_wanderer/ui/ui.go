@@ -75,48 +75,53 @@ func getCurrentTurn(opt *uiOptions) {
 func botBehavior(opt *uiOptions) {
 	var direction = 0
 	var currentIteration = 0
-	var waitIteration = 0
-	var actionIteration = 4
+	var actionIteration = 20
 	go getCurrentTurn(opt)
 	(*opt).currentTurnUIChan <- 1
 	currentTurn := <-(*opt).currentTurnUIChan
 	(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.REGISTER, currentTurn}}
 	for {
-		time.Sleep(time.Millisecond * 25)
-		if currentIteration == actionIteration && waitIteration >= 400 {
-			currentIteration = 0
-			direction = rand.Intn(5)
+		time.Sleep(time.Millisecond * 50)
+		if currentIteration >= actionIteration {
+			direction = rand.Intn(4)
 			switch direction {
 			case 0:
 				if clear, newTurn := verifyClearToSend(opt, currentTurn); clear {
 					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.UP, newTurn}}
 					currentTurn = newTurn
-					waitIteration = 0
+					currentIteration = 0
+				} else {
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, -1, "NOOP", engine.ActionImpl{engine.NOOP, 0}}
 				}
 			case 1:
 				if clear, newTurn := verifyClearToSend(opt, currentTurn); clear {
 					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.RIGHT, newTurn}}
 					currentTurn = newTurn
-					waitIteration = 0
+					currentIteration = 0
+				} else {
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, -1, "NOOP", engine.ActionImpl{engine.NOOP, 0}}
 				}
 			case 2:
 				if clear, newTurn := verifyClearToSend(opt, currentTurn); clear {
 					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.DOWN, newTurn}}
 					currentTurn = newTurn
-					waitIteration = 0
+					currentIteration = 0
+				} else {
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, -1, "NOOP", engine.ActionImpl{engine.NOOP, 0}}
 				}
 			case 3:
 				if clear, newTurn := verifyClearToSend(opt, currentTurn); clear {
 					(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.LEFT, newTurn}}
 					currentTurn = newTurn
-					waitIteration = 0
+					currentIteration = 0
+				} else {
+					(*opt).actionChan <- engine.GameLog{(*opt).playerID, -1, "NOOP", engine.ActionImpl{engine.NOOP, 0}}
 				}
 			}
 		} else {
 			(*opt).actionChan <- engine.GameLog{(*opt).playerID, -1, "NOOP", engine.ActionImpl{engine.NOOP, 0}}
-			currentIteration++
-			waitIteration++
 		}
+		currentIteration++
 	}
 }
 
@@ -195,7 +200,7 @@ func paintScreen(opt *uiOptions, uiScreen screen.Screen, window screen.Window, k
 
 func keepRefreshing(window *screen.Window) {
 	for {
-		time.Sleep(time.Millisecond * 25)
+		time.Sleep(time.Millisecond * 50)
 		var evt key.Event
 		(*window).Send(evt)
 	}

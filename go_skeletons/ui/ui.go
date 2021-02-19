@@ -78,7 +78,7 @@ func botBehavior(opt *uiOptions) {
 	var directionChan = make(chan int)
 	var direction = 0
 	var currentIteration = 0
-	var actionIteration = 4
+	var actionIteration = 8
 	var waitingForDirection = false
 	(*opt).actionChan <- engine.GameLog{(*opt).playerID, GetActionID(), "Game", engine.ActionImpl{engine.REGISTER}}
 	for {

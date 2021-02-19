@@ -173,6 +173,9 @@ func applyAction(state *GameState, playerID PlayerID, action ActionImpl, opt *en
 		// Register new player
 		var newPosition = generateDeterministicPlayerStartingPosition(playerID, state)
 		(*state).Players[playerID] = PlayerState{newPosition, action.Turn}
+	case DISCONNECT:
+		// Remove player from game
+		delete((*state).Players, playerID)
 	}
 	changed := checkIfTurnChanged(opt, state)
 	if changed {

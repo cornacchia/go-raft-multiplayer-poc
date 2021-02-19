@@ -163,6 +163,9 @@ func applyAction(state *GameState, playerID PlayerID, action ActionImpl, stateCh
 		// Register new player
 		var newPosition = generateDeterministicPlayerStartingPosition(playerID)
 		(*state).Players[playerID] = PlayerState{getDeterministicPlayerSprite(playerID), newPosition}
+	case DISCONNECT:
+		// Remove player from game
+		delete((*state).Players, playerID)
 	}
 	jsonState, _ := json.Marshal(*state)
 	stateChan <- jsonState
