@@ -24,20 +24,28 @@ import (
 )
 
 type options struct {
-	actionChan             chan engine.GameLog
-	configurationChan      chan bool
-	firstLeader            raft.ServerID
-	connections            *sync.Map
-	otherServers           []raft.ServerID
-	id                     raft.ServerID
-	connectedChan          chan bool
-	disconnectedChan       chan bool
-	mode                   string
-	requestConnectionChan  chan raft.RequestConnection
-	requestNewServerIDChan chan bool
-	getNewServerIDChan     chan raft.ServerID
-	clientPrivateKey       *rsa.PrivateKey
-	removedFromGameChan    chan bool
+	actionChan                 chan engine.GameLog
+	configurationChan          chan bool
+	firstLeader                raft.ServerID
+	connections                *sync.Map
+	otherServers               []raft.ServerID
+	id                         raft.ServerID
+	connectedChan              chan bool
+	disconnectedChan           chan bool
+	mode                       string
+	requestConnectionChan      chan raft.RequestConnection
+	requestNewServerIDChan     chan bool
+	getNewServerIDChan         chan raft.ServerID
+	clientPrivateKey           *rsa.PrivateKey
+	nodePrivateKey             *rsa.PrivateKey
+	removedFromGameChan        chan bool
+	actionQuorum               sync.Map
+	allServers                 []raft.ServerID
+	configurationChangeChan    chan raft.ConfigurationLog
+	getAllServersChan          chan []raft.ServerID
+	requestAllServersChan      chan bool
+	requestNumberOfServersChan chan bool
+	getNumberOfServersChan     chan int
 }
 
 func checkError(err error) {
@@ -46,8 +54,33 @@ func checkError(err error) {
 	}
 }
 
+func checkActionQuorum(opt *options, id int64) bool {
+	var currentValue, found = (*opt).actionQuorum.Load(id)
+	if !found {
+		log.Trace("Action id not found: ", id)
+		return false
+	}
+	(*opt).requestNumberOfServersChan <- true
+	nOfServers := <-(*opt).getNumberOfServersChan
+	log.Trace("Action quorum: ", currentValue.(int)+1, "/", nOfServers)
+	if currentValue.(int)+1 > nOfServers/2 {
+		(*opt).actionQuorum.LoadAndDelete(id)
+		return true
+	}
+	(*opt).actionQuorum.Store(id, currentValue.(int)+1)
+	return false
+}
+
 func getActionArgsSignature(privKey *rsa.PrivateKey, aa *raft.ActionArgs) []byte {
 	hashed := raft.GetActionArgsBytes(aa)
+	signature, err := rsa.SignPKCS1v15(rng.Reader, privKey, crypto.SHA256, hashed[:])
+	checkError(err)
+
+	return signature
+}
+
+func getConfigurationArgsSignature(privKey *rsa.PrivateKey, ca *raft.AddRemoveServerArgs) []byte {
+	hashed := raft.GetAddRemoveServerArgsBytes(ca)
 	signature, err := rsa.SignPKCS1v15(rng.Reader, privKey, crypto.SHA256, hashed[:])
 	checkError(err)
 
@@ -92,6 +125,56 @@ func connectionPool(opt *options) {
 	}
 }
 
+func addToAllServers(id raft.ServerID, allServers []raft.ServerID) []raft.ServerID {
+	var found = false
+	result := make([]raft.ServerID, 0)
+	for i := 0; i < len(allServers); i++ {
+		if allServers[i] == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		result = append(allServers, id)
+	} else {
+		result = allServers
+	}
+	return result
+}
+
+func removeFromAllServers(id raft.ServerID, allServers []raft.ServerID) []raft.ServerID {
+	result := make([]raft.ServerID, 0)
+	for i := 0; i < len(allServers); i++ {
+		if allServers[i] != id {
+			result = append(result, allServers[i])
+		}
+	}
+	return result
+}
+
+func addRemoveServers(opt *options) {
+	for {
+		select {
+		case confLog := <-(*opt).configurationChangeChan:
+			if confLog.Add {
+				(*opt).requestConnectionChan <- raft.RequestConnection{confLog.Server, (*opt).connections}
+				(*opt).allServers = addToAllServers(confLog.Server, (*opt).allServers)
+				log.Debug("Add to all servers: ", confLog.Server, " -> ", (*opt).allServers)
+			} else {
+				raft.CloseConnection(confLog.Server, (*opt).connections)
+				(*opt).allServers = removeFromAllServers(confLog.Server, (*opt).allServers)
+				log.Debug("Remove from all servers: ", confLog.Server, " -> ", (*opt).allServers)
+			}
+		case <-(*opt).requestAllServersChan:
+			serversToSend := make([]raft.ServerID, len((*opt).allServers))
+			copy(serversToSend, (*opt).allServers)
+			(*opt).getAllServersChan <- serversToSend
+		case <-(*opt).requestNumberOfServersChan:
+			(*opt).getNumberOfServersChan <- len((*opt).allServers)
+		}
+	}
+}
+
 func handleCurrentTurn(currentTurnEngineChan chan int, currentTurnUIChan chan int) {
 	var currentTurn = 0
 	for {
@@ -132,35 +215,54 @@ func broadcastUpdateLeaderRPC(opt *options, updateLeaderArgs *raft.UpdateLeaderA
 	})
 }
 
-func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, changeConnectionChan chan raft.ServerID, msg engine.GameLog, timestamp int64, currentConnection raft.ServerID, opt *options, actionDoneChannel chan bool) {
-	var waitTime time.Duration = 1000
-	select {
-	case <-call.Done:
-		if !(*response).Applied {
-			log.Trace("Main - Action not applied ", currentConnection, " - ", (*response))
-			if (*response).LeaderID != "" {
-				addToKnownServers(opt, (*response).LeaderID)
-				changeConnectionChan <- (*response).LeaderID
-			} else {
-				(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, (*opt).connections}
-				changeConnectionChan <- (*opt).id
+func broadcastAction(opt *options, actionArgs *raft.ActionArgs, timestamp int64, actionDoneChannel chan bool) {
+	(*opt).requestAllServersChan <- true
+	allServers := <-(*opt).getAllServersChan
+	chanResponse := make(chan bool, len(allServers))
+	for _, id := range allServers {
+		conn, found := (*opt).connections.Load(id)
+		if !found {
+			log.Debug("Main - Connection not found, will not broadcast action for now: ", id)
+			(*opt).requestConnectionChan <- raft.RequestConnection{id, (*opt).connections}
+			continue
+		}
+		log.Debug("Broadcast action to: ", id)
+		var actionResponse raft.ActionResponse
+		var raftConn = conn.(raft.RaftConnection)
+		actionCall := raftConn.Connection.Go("RaftListener.ActionRPC", actionArgs, &actionResponse, nil)
+		go func(opt *options, actionCall *rpc.Call, response *raft.ActionResponse, actionId int64, id raft.ServerID) {
+			select {
+			case <-actionCall.Done:
+				if !(*response).Applied {
+					log.Trace("Main - Action not applied ", id, " - ", (*response))
+					chanResponse <- false
+				} else {
+					chanResponse <- true
+				}
+			case <-time.After(time.Millisecond * 500):
+				chanResponse <- false
 			}
+		}(opt, actionCall, &actionResponse, (*actionArgs).ActionId, id)
+	}
+
+	var done = false
+	var timer = time.NewTimer(time.Millisecond * 500)
+	for !done {
+		select {
+		case resp := <-chanResponse:
+			if resp && checkActionQuorum(opt, (*actionArgs).ActionId) {
+				if (*opt).mode == "Test" {
+					var now = getNowMs()
+					log.Info("Main - Action time: ", (now - timestamp), " - ", (*actionArgs).ActionId)
+				}
+				actionDoneChannel <- true
+				done = true
+			}
+		case <-timer.C:
+			log.Trace("Main - Action broadcast timeout")
 			actionDoneChannel <- false
-		} else {
-			if (*opt).mode == "Test" {
-				var now = getNowMs()
-				log.Info("Main - Action time: ", (now - timestamp), " - ", msg.ActionId)
-			}
-			actionDoneChannel <- true
+			done = true
 		}
-	case <-time.After(time.Millisecond * waitTime):
-		if (*opt).mode == "Test" {
-			log.Info("Main - Action dropped - ", currentConnection, " - ", msg.ActionId)
-		}
-		//changeConnectionChan <- ""
-		var updateLeaderArgs = raft.UpdateLeaderArgs{string(msg.Id), raft.ServerID(currentConnection), []byte{}}
-		updateLeaderArgs.Signature = getUpdateLeaderSignature((*opt).clientPrivateKey, &updateLeaderArgs)
-		broadcastUpdateLeaderRPC(opt, &updateLeaderArgs, changeConnectionChan)
 	}
 }
 
@@ -217,7 +319,8 @@ func manageActions(opt *options) {
 			}
 		case msg := <-(*opt).configurationChan:
 			var configurationResponse raft.AddRemoveServerResponse
-			var configurationArgs = raft.AddRemoveServerArgs{(*opt).id, msg}
+			var configurationArgs = raft.AddRemoveServerArgs{(*opt).id, msg, []byte{}}
+			configurationArgs.Signature = getConfigurationArgsSignature((*opt).nodePrivateKey, &configurationArgs)
 			var conn, found = (*(*opt).connections).Load(currentConnection)
 			if !found {
 				(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, (*opt).connections}
@@ -244,6 +347,11 @@ func manageActions(opt *options) {
 			}
 		case done := <-actionDoneChannel:
 			clearToSend = true
+			if !done {
+				var updateLeaderArgs = raft.UpdateLeaderArgs{string((*opt).id), raft.ServerID(currentConnection), []byte{}}
+				updateLeaderArgs.Signature = getUpdateLeaderSignature((*opt).clientPrivateKey, &updateLeaderArgs)
+				broadcastUpdateLeaderRPC(opt, &updateLeaderArgs, changeConnectionChan)
+			}
 			if done && len(actions) > 0 {
 				if actions[0].Action.Action == engine.DISCONNECT {
 					(*opt).removedFromGameChan <- true
@@ -255,22 +363,12 @@ func manageActions(opt *options) {
 			if clearToSend && len(actions) > 0 {
 				clearToSend = false
 				var msg = actions[0]
-				log.Debug("Main - start sending: ", msg.ActionId)
 				var timestamp = getNowMs()
-				var actionResponse raft.ActionResponse
 				var jsonAction, _ = json.Marshal(msg.Action)
 				var actionArgs = raft.ActionArgs{string(msg.Id), msg.ActionId, msg.Type, jsonAction, []byte{}}
 				actionArgs.Signature = getActionArgsSignature((*opt).clientPrivateKey, &actionArgs)
-				var conn, found = (*(*opt).connections).Load(currentConnection)
-				if !found {
-					(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, (*opt).connections}
-					(*opt).requestNewServerIDChan <- true
-					currentConnection = <-(*opt).getNewServerIDChan
-				} else {
-					var raftConn = conn.(raft.RaftConnection)
-					actionCall := raftConn.Connection.Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
-					go handleActionResponse(actionCall, &actionResponse, changeConnectionChan, msg, timestamp, currentConnection, opt, actionDoneChannel)
-				}
+				(*opt).actionQuorum.Store(msg.ActionId, 0)
+				go broadcastAction(opt, &actionArgs, timestamp, actionDoneChannel)
 			}
 		}
 	}
@@ -351,7 +449,8 @@ func main() {
 
 	mode := args[1]
 	nodeMode := args[2]
-	port := args[3]
+	connectionMode := args[3]
+	port := args[4]
 
 	nodeKeys, clientKeys, nodePrivateKey, clientPrivateKey := readRSAKeys(port)
 
@@ -369,8 +468,10 @@ func main() {
 	var firstLeader = raft.ServerID("")
 	// Get other servers
 	otherServers := make([]raft.ServerID, 0)
-	for i := 4; i < len(args); i++ {
+	var allServers = []raft.ServerID{serverID}
+	for i := 5; i < len(args); i++ {
 		otherServers = append(otherServers, raft.ServerID(args[i]))
+		allServers = append(allServers, raft.ServerID(args[i]))
 	}
 
 	if len(otherServers) > 0 {
@@ -397,10 +498,14 @@ func main() {
 	var requestNewServerIDChan = make(chan bool)
 	var getNewServerIDChan = make(chan raft.ServerID)
 	var removedFromGameChan = make(chan bool)
-
+	var configurationChangeChan = make(chan raft.ConfigurationLog)
+	var getAllServersChan = make(chan []raft.ServerID)
+	var requestAllServersChan = make(chan bool)
+	var requestNumberOfServersChan = make(chan bool)
+	var getNumberOfServersChan = make(chan int)
 	stateReqChan, stateChan, actionChan = engine.Start(playerID, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan, currentTurnEngineChan)
 
-	var _ = raft.Start(nodeMode, port, otherServers, actionChan, nodeConnectedChan, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan, nodeKeys, clientKeys, nodePrivateKey)
+	var _ = raft.Start(nodeMode, port, otherServers, actionChan, nodeConnectedChan, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan, nodeKeys, clientKeys, nodePrivateKey, configurationChangeChan)
 	var nodeConnections = raft.ConnectToRaftServers(nil, raft.ServerID(port), otherServers)
 
 	var opt = options{
@@ -417,16 +522,27 @@ func main() {
 		requestNewServerIDChan,
 		getNewServerIDChan,
 		clientPrivateKey,
-		removedFromGameChan}
+		nodePrivateKey,
+		removedFromGameChan,
+		sync.Map{},
+		allServers,
+		configurationChangeChan,
+		getAllServersChan,
+		requestAllServersChan,
+		requestNumberOfServersChan,
+		getNumberOfServersChan}
+	go addRemoveServers(&opt)
 	go connectionPool(&opt)
 	go raft.ConnectionManager(nil, requestConnectionChan)
 	go manageActions(&opt)
 	go handleCurrentTurn(currentTurnEngineChan, currentTurnUIChan)
 
 	if len(otherServers) > 0 {
-		uiConfChan <- true
-		// Wait for the node to be fully connected
-		<-mainConnectedChan
+		if connectionMode == "Append" {
+			uiConfChan <- true
+			// Wait for the node to be fully connected
+			<-mainConnectedChan
+		}
 		// Notify the raft node
 		nodeConnectedChan <- true
 	}

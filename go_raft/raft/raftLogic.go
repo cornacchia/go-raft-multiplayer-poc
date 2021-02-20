@@ -34,7 +34,7 @@ type gameAction struct {
 type configurationAction struct {
 	Msg          ConfigurationLog
 	ChanResponse chan *AddRemoveServerResponse
-	Signature    []byte
+	Args         *AddRemoveServerArgs
 }
 
 type options struct {
@@ -76,10 +76,11 @@ type options struct {
 	requestConnectionChan    chan RequestConnection
 	clientKeys               map[string]*rsa.PublicKey
 	nodeKeys                 map[ServerID]*rsa.PublicKey
+	mainConfChan             chan ConfigurationLog
 }
 
 // Start function for server logic
-func Start(mode string, port string, otherServers []ServerID, actionChan chan GameLog, connectedChan chan bool, snapshotRequestChan chan bool, snapshotResponseChan chan []byte, installSnapshotChan chan []byte, nodeKeys map[ServerID]*rsa.PublicKey, clientKeys map[string]*rsa.PublicKey, privateKey *rsa.PrivateKey) *sync.Map {
+func Start(mode string, port string, otherServers []ServerID, actionChan chan GameLog, connectedChan chan bool, snapshotRequestChan chan bool, snapshotResponseChan chan []byte, installSnapshotChan chan []byte, nodeKeys map[ServerID]*rsa.PublicKey, clientKeys map[string]*rsa.PublicKey, privateKey *rsa.PrivateKey, mainConfChan chan ConfigurationLog) *sync.Map {
 	var newOptions = &options{
 		mode,
 		newState(port, otherServers, snapshotRequestChan, snapshotResponseChan, installSnapshotChan, nodeKeys, clientKeys, privateKey),
@@ -107,7 +108,8 @@ func Start(mode string, port string, otherServers []ServerID, actionChan chan Ga
 		len(otherServers) == 0,
 		make(chan RequestConnection),
 		clientKeys,
-		nodeKeys}
+		nodeKeys,
+		mainConfChan}
 	var raftListener = initRaftListener(newOptions)
 	startListeningServer(raftListener, port)
 	nodeConnections := ConnectToRaftServers(newOptions, newOptions._state.getID(), otherServers)
@@ -350,9 +352,10 @@ func handleConfigurationMessages(opt *options) {
 			conf.ChanResponse <- &AddRemoveServerResponse{false, (*opt)._state.getCurrentLeader()}
 		case Leader:
 			log.Trace("Raft - Received configuration message: ", conf.Msg)
-			var hashed = GetConfigurationLogBytes(conf.Msg)
-			err := rsa.VerifyPKCS1v15(((*opt).nodeKeys[conf.Msg.Server]), crypto.SHA256, hashed[:], conf.Signature)
+			var hashed = GetAddRemoveServerArgsBytes(conf.Args)
+			err := rsa.VerifyPKCS1v15(((*opt).nodeKeys[conf.Msg.Server]), crypto.SHA256, hashed[:], conf.Args.Signature)
 			if err != nil {
+				log.Debug("Signature not verified ", conf.Args)
 				conf.ChanResponse <- &AddRemoveServerResponse{false, ""}
 			} else {
 				if conf.Msg.Add {
@@ -738,6 +741,11 @@ func applyLog(opt *options, raftLog RaftLog) {
 	if raftLog.Type == Game {
 		(*opt).actionChan <- raftLog.Log
 		(*opt)._state.updateClientLastActionApplied(ServerID(raftLog.Log.Id), raftLog.Log.ActionId)
+	} else if raftLog.Type == Configuration {
+		if !raftLog.ConfigurationLog.Add {
+			(*opt)._state.removeServer(raftLog.ConfigurationLog.Server)
+		}
+		(*opt).mainConfChan <- raftLog.ConfigurationLog
 	}
 	if (*opt)._state.getState() == Leader {
 		if raftLog.Type == Game && raftLog.Log.ChanApplied != nil {

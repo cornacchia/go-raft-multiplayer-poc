@@ -144,7 +144,7 @@ func (listener *RaftListener) AppendEntriesRPC(args *AppendEntriesArgs, reply *A
 	reply.LastIndex = repl.LastIndex
 	reply.Signature = repl.Signature
 	if len((*args).Entries) > 0 {
-		log.Info("Respond to AppendEntriesRPC: ", (*args).LeaderID, " ", (*args).PrevLogIndex)
+		log.Info("Respond to AppendEntriesRPC: ", (*args).LeaderID, " ", (*args).PrevLogIndex, " ", repl.Success)
 	}
 	return nil
 }
@@ -208,7 +208,7 @@ func (listener *RaftListener) AddRemoveServerRPC(args *AddRemoveServerArgs, repl
 	var act = configurationAction{
 		ConfigurationLog{args.Add, args.Server, chanApplied},
 		chanResponse,
-		args.Signature}
+		args}
 
 	listener.ConfigurationChan <- act
 	repl := <-chanResponse
