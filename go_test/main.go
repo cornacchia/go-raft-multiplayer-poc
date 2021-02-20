@@ -40,7 +40,7 @@ var openCmds = [1024]*exec.Cmd{}
 func newCommand(pkgToTest string, mode string, ports []string, idx int) {
 	var cmd *exec.Cmd
 	var cmdString = "./" + pkgToTest
-	var args = []string{"Test", mode}
+	var args = []string{"Test", mode, "Append"}
 	cmd = exec.Command(cmdString, append(args, ports...)...)
 	cmd.Dir = "../" + pkgToTest
 	cmd.Stderr = os.Stderr

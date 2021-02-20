@@ -232,12 +232,13 @@ func main() {
 	// Command line arguments
 	args := os.Args
 	if len(args) < 4 {
-		log.Fatal("Usage: go_skeletons <Game|Test> <Client|Node|Bot> <Port> ...<other raft ports>")
+		log.Fatal("Usage: go_skeletons <Game|Test> <Client|Node|Bot> <Append|Full> <Port> ...<other raft ports>")
 	}
 
 	mode := args[1]
 	nodeMode := args[2]
-	port := args[3]
+	connectionMode := args[3]
+	port := args[4]
 
 	var logOutputFile *os.File
 
@@ -253,7 +254,7 @@ func main() {
 	var firstLeader = raft.ServerID("")
 	// Get other servers
 	otherServers := make([]raft.ServerID, 0)
-	for i := 4; i < len(args); i++ {
+	for i := 5; i < len(args); i++ {
 		otherServers = append(otherServers, raft.ServerID(args[i]))
 	}
 
@@ -303,9 +304,11 @@ func main() {
 	go manageActions(&opt)
 
 	if len(otherServers) > 0 {
-		uiConfChan <- true
-		// Wait for the node to be fully connected
-		<-mainConnectedChan
+		if connectionMode == "Append" {
+			uiConfChan <- true
+			// Wait for the node to be fully connected
+			<-mainConnectedChan
+		}
 		// Notify the raft node
 		nodeConnectedChan <- true
 	}
