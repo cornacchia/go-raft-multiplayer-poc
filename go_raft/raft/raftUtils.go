@@ -155,6 +155,20 @@ func GetActionArgsBytes(aa *ActionArgs) [32]byte {
 	return sha256.Sum256(buf.Bytes())
 }
 
+func GetConfigurationLogBytes(cl ConfigurationLog) [32]byte {
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.LittleEndian, cl.Add)
+	binary.Write(buf, binary.LittleEndian, cl.Server)
+	return sha256.Sum256(buf.Bytes())
+}
+
+func GetAddRemoveServerArgsBytes(ar *AddRemoveServerArgs) [32]byte {
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.LittleEndian, (*ar).Add)
+	binary.Write(buf, binary.LittleEndian, (*ar).Server)
+	return sha256.Sum256(buf.Bytes())
+}
+
 func GetUpdateLeaderArgsBytes(ula *UpdateLeaderArgs) [32]byte {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.LittleEndian, (*ula).Id)

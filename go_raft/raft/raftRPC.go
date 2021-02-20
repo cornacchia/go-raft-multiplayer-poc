@@ -94,8 +94,9 @@ type UpdateLeaderResponse struct {
 }
 
 type AddRemoveServerArgs struct {
-	Server ServerID
-	Add    bool
+	Server    ServerID
+	Add       bool
+	Signature []byte
 }
 
 type AddRemoveServerResponse struct {
@@ -206,7 +207,8 @@ func (listener *RaftListener) AddRemoveServerRPC(args *AddRemoveServerArgs, repl
 	chanResponse := make(chan *AddRemoveServerResponse)
 	var act = configurationAction{
 		ConfigurationLog{args.Add, args.Server, chanApplied},
-		chanResponse}
+		chanResponse,
+		args.Signature}
 
 	listener.ConfigurationChan <- act
 	repl := <-chanResponse

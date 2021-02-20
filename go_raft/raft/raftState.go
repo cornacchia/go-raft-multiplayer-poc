@@ -116,6 +116,7 @@ type stateImpl struct {
 	appendEntriesSituation      map[ServerID]int
 	votedForTerm                int
 	votedForChan                chan *RequestVoteResponse
+	clientChanResponse          map[string]map[int64]chan bool
 }
 
 func raftLogToString(log RaftLog) string {
@@ -189,7 +190,8 @@ func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, 
 		make(map[ServerID]RequestVoteResponse),
 		make(map[ServerID]int),
 		-1,
-		nil}
+		nil,
+		make(map[string]map[int64]chan bool)}
 	return &state
 }
 
@@ -240,6 +242,8 @@ type state interface {
 	countConnections() int
 	unlockNextConfiguration()
 	serverInConfiguration(ServerID) bool
+	addClientChanResponse(string, int64, chan bool)
+	respondToClientChanResponse(string, int64, bool)
 }
 
 func (_state *stateImpl) isBanned(sid ServerID) bool {
@@ -1209,4 +1213,29 @@ func (_state *stateImpl) serverInConfiguration(sid ServerID) bool {
 	}
 	_state.lock.Unlock()
 	return false
+}
+
+func (_state *stateImpl) addClientChanResponse(clientID string, actionID int64, respChan chan bool) {
+	_state.lock.Lock()
+	clientMap, found := _state.clientChanResponse[clientID]
+	if !found {
+		clientMap = make(map[int64]chan bool)
+	}
+	clientMap[actionID] = respChan
+	_state.clientChanResponse[clientID] = clientMap
+	_state.lock.Unlock()
+}
+
+func (_state *stateImpl) respondToClientChanResponse(clientID string, actionID int64, val bool) {
+	_state.lock.Lock()
+	clientMap, clientFound := _state.clientChanResponse[clientID]
+	if clientFound {
+		actionChan, actionFound := clientMap[actionID]
+		if actionFound {
+			actionChan <- val
+			delete(clientMap, actionID)
+			_state.clientChanResponse[clientID] = clientMap
+		}
+	}
+	_state.lock.Unlock()
 }

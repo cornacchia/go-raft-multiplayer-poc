@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"crypto"
 	"crypto/rsa"
 	"net"
 	"net/http"
@@ -33,6 +34,7 @@ type gameAction struct {
 type configurationAction struct {
 	Msg          ConfigurationLog
 	ChanResponse chan *AddRemoveServerResponse
+	Signature    []byte
 }
 
 type options struct {
@@ -73,6 +75,7 @@ type options struct {
 	connected                bool
 	requestConnectionChan    chan RequestConnection
 	clientKeys               map[string]*rsa.PublicKey
+	nodeKeys                 map[ServerID]*rsa.PublicKey
 }
 
 // Start function for server logic
@@ -103,7 +106,8 @@ func Start(mode string, port string, otherServers []ServerID, actionChan chan Ga
 		connectedChan,
 		len(otherServers) == 0,
 		make(chan RequestConnection),
-		clientKeys}
+		clientKeys,
+		nodeKeys}
 	var raftListener = initRaftListener(newOptions)
 	startListeningServer(raftListener, port)
 	nodeConnections := ConnectToRaftServers(newOptions, newOptions._state.getID(), otherServers)
@@ -297,9 +301,23 @@ func handleClientMessages(opt *options) {
 		act := <-(*opt).msgChan
 		switch (*opt)._state.getState() {
 		case Follower:
-			act.ChanResponse <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
+			// act.ChanResponse <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
+			if act.Msg.ActionId > (*opt)._state.getClientLastActionApplied(ServerID(act.Msg.Id)) {
+				(*opt)._state.addClientChanResponse(act.Msg.Id, act.Msg.ActionId, act.Msg.ChanApplied)
+				go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
+			} else {
+				go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
+				act.Msg.ChanApplied <- true
+			}
 		case Candidate:
-			act.ChanResponse <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
+			// act.ChanResponse <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
+			if act.Msg.ActionId > (*opt)._state.getClientLastActionApplied(ServerID(act.Msg.Id)) {
+				(*opt)._state.addClientChanResponse(act.Msg.Id, act.Msg.ActionId, act.Msg.ChanApplied)
+				go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
+			} else {
+				go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
+				act.Msg.ChanApplied <- true
+			}
 		case Leader:
 			// Handle player game action (i.e. movement)
 			if act.Msg.ActionId > (*opt)._state.getClientLastActionApplied(ServerID(act.Msg.Id)) {
@@ -332,19 +350,25 @@ func handleConfigurationMessages(opt *options) {
 			conf.ChanResponse <- &AddRemoveServerResponse{false, (*opt)._state.getCurrentLeader()}
 		case Leader:
 			log.Trace("Raft - Received configuration message: ", conf.Msg)
-			if conf.Msg.Add {
-				// Check if this is a reconnection after a node failure
-				if _, found := (*opt).connections.LoadAndDelete(conf.Msg.Server); found {
-					(*opt)._state.removeServer(ServerID(conf.Msg.Server))
-				}
-				(*opt).requestConnectionChan <- RequestConnection{conf.Msg.Server, (*opt).unvotingConnections}
-				// If it is a connection request store it for when the server will be up to date
-				(*opt)._state.addNewUnvotingServer(conf)
+			var hashed = GetConfigurationLogBytes(conf.Msg)
+			err := rsa.VerifyPKCS1v15(((*opt).nodeKeys[conf.Msg.Server]), crypto.SHA256, hashed[:], conf.Signature)
+			if err != nil {
+				conf.ChanResponse <- &AddRemoveServerResponse{false, ""}
 			} else {
-				// Otherwise immediately add it to the queue
-				ok, conf := (*opt)._state.handleConfigurationRPC(conf)
-				if ok {
-					go handleResponseToConfigurationMessage(opt, conf.Msg.ChanApplied, conf.ChanResponse)
+				if conf.Msg.Add {
+					// Check if this is a reconnection after a node failure
+					if _, found := (*opt).connections.LoadAndDelete(conf.Msg.Server); found {
+						(*opt)._state.removeServer(ServerID(conf.Msg.Server))
+					}
+					(*opt).requestConnectionChan <- RequestConnection{conf.Msg.Server, (*opt).unvotingConnections}
+					// If it is a connection request store it for when the server will be up to date
+					(*opt)._state.addNewUnvotingServer(conf)
+				} else {
+					// Otherwise immediately add it to the queue
+					ok, conf := (*opt)._state.handleConfigurationRPC(conf)
+					if ok {
+						go handleResponseToConfigurationMessage(opt, conf.Msg.ChanApplied, conf.ChanResponse)
+					}
 				}
 			}
 		}
@@ -711,7 +735,6 @@ func handleLeader(opt *options) {
 
 func applyLog(opt *options, raftLog RaftLog) {
 	log.Info("Raft apply log: ", raftLog.Idx, " ", raftLogToString(raftLog))
-	// TODO remove player from game if disconnected
 	if raftLog.Type == Game {
 		(*opt).actionChan <- raftLog.Log
 		(*opt)._state.updateClientLastActionApplied(ServerID(raftLog.Log.Id), raftLog.Log.ActionId)
@@ -728,6 +751,10 @@ func applyLog(opt *options, raftLog RaftLog) {
 			if !raftLog.ConfigurationLog.Add {
 				CloseConnection(raftLog.ConfigurationLog.Server, (*opt).connections)
 			}
+		}
+	} else {
+		if raftLog.Type == Game {
+			(*opt)._state.respondToClientChanResponse(raftLog.Log.Id, raftLog.Log.ActionId, true)
 		}
 	}
 }
