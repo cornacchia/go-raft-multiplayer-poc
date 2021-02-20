@@ -283,6 +283,7 @@ func (_state *stateImpl) startElection() {
 
 func (_state *stateImpl) prepareRequestVoteRPC() *RequestVoteArgs {
 	var lastLogIdx, lastLogTerm = _state.getLastLogIdxTerm()
+
 	var rva = RequestVoteArgs{_state.currentTerm, _state.id, lastLogIdx, lastLogTerm, []byte{}}
 	rva.Signature = getRequestVoteArgsSignature(_state.privateKey, &rva)
 	return &rva
@@ -317,6 +318,7 @@ func (_state *stateImpl) stopElectionTimeout() {
 }
 
 func (_state *stateImpl) updateCurrentTerm(newTerm int) {
+	_state.currentState = Follower
 	_state.currentTerm = newTerm
 	_state.votedFor = ""
 	_state.acceptAppendEntries = false
@@ -327,15 +329,16 @@ func (_state *stateImpl) handleRequestToVote(wrap requestVoteArgsWrapper) *Reque
 	var rva = wrap.args
 	var hashed = getRequestVoteArgsBytes(rva)
 	err := rsa.VerifyPKCS1v15((_state.nodeKeys[(*rva).CandidateID]), crypto.SHA256, hashed[:], (*rva).Signature)
-	if err != nil || _state.currentState == Leader || _state.votedFor != "" {
+	if err != nil {
 		var rvr = RequestVoteResponse{_state.id, _state.currentTerm, false, []byte{}}
 		rvr.Signature = getRequestVoteResponseSignature(_state.privateKey, &rvr)
 		_state.lock.Unlock()
+		log.Info("Refuse vote: unverified signature")
 		return &rvr
 	}
 	var lastLogIdx, lastLogTerm = _state.getLastLogIdxTerm()
 	if _state.currentTerm > (*rva).Term {
-		log.Trace("Current term greater than Candidate term: ", _state.currentTerm, " ", (*rva).Term)
+		log.Info("Current term greater than Candidate term: ", _state.currentTerm, " ", (*rva).Term)
 		var rvr = RequestVoteResponse{_state.id, _state.currentTerm, false, []byte{}}
 		rvr.Signature = getRequestVoteResponseSignature(_state.privateKey, &rvr)
 		_state.lock.Unlock()
@@ -346,7 +349,10 @@ func (_state *stateImpl) handleRequestToVote(wrap requestVoteArgsWrapper) *Reque
 
 	// At this point we know that (*rva).Term == _state.currentTerm
 	if (_state.votedFor == "" || _state.votedFor == (*rva).CandidateID) && (*rva).LastLogTerm >= lastLogTerm && (*rva).LastLogIndex >= lastLogIdx {
-		log.Trace("Cast lazy vote for: ", (*rva).CandidateID)
+		log.Info("Cast lazy vote for: ", (*rva).CandidateID)
+		if _state.currentState == Leader {
+			_state.currentState = Follower
+		}
 		_state.votedFor = (*rva).CandidateID
 		_state.votedForTerm = (*rva).Term
 		_state.votedForChan = wrap.respChan
@@ -354,7 +360,7 @@ func (_state *stateImpl) handleRequestToVote(wrap requestVoteArgsWrapper) *Reque
 		return nil
 	}
 
-	log.Trace("Already voted for: ", _state.votedFor, " or ", lastLogTerm, " > ", (*rva).LastLogTerm, " or ", lastLogIdx, " > ", (*rva).LastLogIndex)
+	log.Info("Already voted for: ", _state.votedFor, " or ", lastLogTerm, " > ", (*rva).LastLogTerm, " or ", lastLogIdx, " > ", (*rva).LastLogIndex)
 	var rvr = RequestVoteResponse{_state.id, _state.currentTerm, false, []byte{}}
 	rvr.Signature = getRequestVoteResponseSignature(_state.privateKey, &rvr)
 	_state.lock.Unlock()
@@ -633,8 +639,9 @@ func (_state *stateImpl) verifyAppendEntriesQuorum(aea *AppendEntriesArgs) bool 
 		}
 	}
 
-	log.Info("Verify append entries quorum ", votes, "/", len(_state.serverConfiguration), " ", _state.serverConfiguration)
-	return votes > len(_state.serverConfiguration)/2
+	log.Info("Verify append entries quorum ", votes, "/", len(_state.serverConfiguration))
+	// NB: the Candidate doesn't actually produce a vote for itself so we should assume it
+	return votes+1 > len(_state.serverConfiguration)/2
 }
 
 func (_state *stateImpl) updateQuorum(sid ServerID, aea *AppendEntriesArgs) {
@@ -669,7 +676,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEnt
 	var hashed = getAppendEntriesArgsBytes(aea)
 	err := rsa.VerifyPKCS1v15((_state.nodeKeys[(*aea).LeaderID]), crypto.SHA256, hashed[:], (*aea).Signature)
 	if err != nil {
-		var aer = AppendEntriesResponse{_state.id, -1, false, -1, []byte{}}
+		var aer = AppendEntriesResponse{_state.id, -1, false, -1, [32]byte{}, []byte{}}
 		aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
 		_state.lock.Unlock()
 		log.Trace("Refuse AERPC signature not verified")
@@ -678,16 +685,11 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEnt
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
 	// 1. Reply false if rpc term < currentTerm
 	if (*aea).Term < _state.currentTerm {
-		var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, []byte{}}
+		var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, [32]byte{}, []byte{}}
 		aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
 		_state.lock.Unlock()
 		log.Trace("Refuse AERPC term out of date")
 		return &aer, true
-	}
-
-	// Immediately update term if out of date
-	if (*aea).Term > _state.currentTerm {
-		_state.updateCurrentTerm((*aea).Term)
 	}
 
 	// At this point a Leader or Candidate should step down because the term is at least
@@ -704,8 +706,12 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEnt
 		log.Info("AppendEntries quorum verified: ", quorum)
 		if quorum {
 			_state.acceptAppendEntries = true
+			// Immediately update term if out of date
+			if (*aea).Term > _state.currentTerm {
+				_state.updateCurrentTerm((*aea).Term)
+			}
 		} else {
-			var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, []byte{}}
+			var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, [32]byte{}, []byte{}}
 			aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
 			_state.lock.Unlock()
 			log.Trace("Refuse AERPC no quorum")
@@ -722,7 +728,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEnt
 			// If we didn't find the previous log index it may be included in the last snapshot
 			// so we check if there exists a last snapshot and if it includes the previous log index
 			if _state.lastSnapshot == nil || (*_state.lastSnapshot).lastIncludedIndex < (*aea).PrevLogIndex {
-				var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, []byte{}}
+				var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, [32]byte{}, []byte{}}
 				aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
 				_state.lock.Unlock()
 				log.Trace("Refuse AERPC log index not in snapshot")
@@ -730,7 +736,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEnt
 			}
 		} else {
 			if _state.logs[prevLogIdx].Term != (*aea).PrevLogTerm {
-				var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, []byte{}}
+				var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, [32]byte{}, []byte{}}
 				aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
 				_state.lock.Unlock()
 				log.Trace("Refuse AERPC log term not in snapshot")
@@ -751,7 +757,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEnt
 	// Check if the node has enough log space for all the logs of the AppendEntriesRPC
 	if startNextIdx+len((*aea).Entries) >= logArrayCapacity {
 		if !_state.takeSnapshot() {
-			var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, []byte{}}
+			var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, [32]byte{}, []byte{}}
 			aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
 			_state.lock.Unlock()
 			log.Trace("Refuse AERPC could not take snapshot")
@@ -761,12 +767,16 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEnt
 		_, prevLogIdx = _state.findArrayIndexByHash((*aea).PrevLogHash)
 		startNextIdx = prevLogIdx + 1
 		if startNextIdx+len((*aea).Entries) >= logArrayCapacity {
-			var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, []byte{}}
+			var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, [32]byte{}, []byte{}}
 			aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
 			_state.lock.Unlock()
 			log.Trace("Refuse AERPC no space after snapshot")
 			return &aer, true
 		}
+	}
+
+	if len((*aea).Entries) > 0 {
+		_state.currentIgnoreTerm = -1
 	}
 
 	// At this point we should be confident that we have enough space for the logs
@@ -805,7 +815,9 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEnt
 
 	_state.updateQuorum(_state.id, aea)
 	_state.updateQuorum((*aea).LeaderID, aea)
-	var aer = AppendEntriesResponse{_state.id, _state.currentTerm, true, lastLogIdx, []byte{}}
+	var lastAddedLogIdx, _ = _state.getLastLogIdxTerm()
+	_, lastLogHash := _state.getLogHashFromIdx(lastAddedLogIdx)
+	var aer = AppendEntriesResponse{_state.id, _state.currentTerm, true, lastAddedLogIdx, lastLogHash, []byte{}}
 	aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
 	_state.lock.Unlock()
 	return &aer, true
@@ -1124,7 +1136,8 @@ func (_state *stateImpl) updateAppendEntriesResponseSituation(aer *AppendEntries
 		return
 	}
 
-	if (*aer).LastIndex > _state.appendEntriesSituation[(*aer).Id] {
+	found, hash := _state.getLogHashFromIdx((*aer).LastIndex)
+	if found && hash == (*aer).LastHash && (*aer).LastIndex > _state.appendEntriesSituation[(*aer).Id] {
 		_state.appendEntriesSituation[(*aer).Id] = (*aer).LastIndex
 	}
 
@@ -1139,7 +1152,10 @@ func (_state *stateImpl) ignoreHeartbeatsForThisTerm() {
 }
 
 func (_state *stateImpl) shouldIgnoreHeartbeats() bool {
-	return _state.currentIgnoreTerm == _state.currentTerm
+	_state.lock.Lock()
+	var result = _state.currentIgnoreTerm == _state.currentTerm
+	_state.lock.Unlock()
+	return result
 }
 
 func (_state *stateImpl) hasVoted() bool {

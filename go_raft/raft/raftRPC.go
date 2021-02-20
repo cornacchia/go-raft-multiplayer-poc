@@ -25,6 +25,7 @@ type AppendEntriesResponse struct {
 	Term      int
 	Success   bool
 	LastIndex int
+	LastHash  [32]byte
 	Signature []byte
 }
 
@@ -142,6 +143,7 @@ func (listener *RaftListener) AppendEntriesRPC(args *AppendEntriesArgs, reply *A
 	reply.Term = repl.Term
 	reply.Success = repl.Success
 	reply.LastIndex = repl.LastIndex
+	reply.LastHash = repl.LastHash
 	reply.Signature = repl.Signature
 	if len((*args).Entries) > 0 {
 		log.Info("Respond to AppendEntriesRPC: ", (*args).LeaderID, " ", (*args).PrevLogIndex, " ", repl.Success)

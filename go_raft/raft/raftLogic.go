@@ -429,10 +429,7 @@ func handleInstallSnapshotResponses(opt *options) {
 func handleOtherAppendEntriesResponse(opt *options) {
 	for {
 		appendEntriesResponse := <-(*opt).otherAppendEntriesResponseChan
-		var _, found = (*(*opt).connections).Load((*appendEntriesResponse).Id)
-		if found {
-			(*opt)._state.updateAppendEntriesResponseSituation(appendEntriesResponse)
-		}
+		(*opt)._state.updateAppendEntriesResponseSituation(appendEntriesResponse)
 	}
 }
 
@@ -458,17 +455,19 @@ func handleFollower(opt *options) {
 	select {
 	// Receive an AppendEntriesRPC
 	case appEntrArgs := <-(*opt).appendEntriesArgsChan:
-		(*opt)._state.stopElectionTimeout()
-		var response, signatureVerified = (*opt)._state.handleAppendEntries(appEntrArgs)
-		(*opt).appendEntriesResponseChan <- response
-		if response.Success && (*opt)._state.hasVoted() {
-			(*opt)._state.clearPendingVotes()
-		}
-		if signatureVerified {
-			checkNewConfigurations(opt, appEntrArgs)
-		}
-		if len(appEntrArgs.Entries) > 0 {
-			broadcastAppendEntriesResponse(opt, response)
+		if len(appEntrArgs.Entries) > 0 || !(*opt)._state.shouldIgnoreHeartbeats() {
+			(*opt)._state.stopElectionTimeout()
+			var response, signatureVerified = (*opt)._state.handleAppendEntries(appEntrArgs)
+			(*opt).appendEntriesResponseChan <- response
+			if response.Success && (*opt)._state.hasVoted() {
+				(*opt)._state.clearPendingVotes()
+			}
+			if signatureVerified {
+				checkNewConfigurations(opt, appEntrArgs)
+			}
+			if len(appEntrArgs.Entries) > 0 {
+				broadcastAppendEntriesResponse(opt, response)
+			}
 		}
 		// Receive a RequestVoteRPC
 	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
@@ -509,22 +508,21 @@ func handleCandidate(opt *options) {
 	select {
 	case <-(*opt).connectedChan:
 		(*opt).connected = true
-	// Received message from client: respond with correct leader id
-	case act := <-(*opt).msgChan:
-		act.ChanResponse <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
 		// Receive an AppendEntriesRPC
 	case appEntrArgs := <-(*opt).appendEntriesArgsChan:
-		// Election timeout is stopped in handleAppendEntries if necessary
-		var response, signatureVerified = (*opt)._state.handleAppendEntries(appEntrArgs)
-		(*opt).appendEntriesResponseChan <- response
-		if response.Success && (*opt)._state.hasVoted() {
-			(*opt)._state.clearPendingVotes()
-		}
-		if signatureVerified {
-			checkNewConfigurations(opt, appEntrArgs)
-		}
-		if len(appEntrArgs.Entries) > 0 {
-			broadcastAppendEntriesResponse(opt, response)
+		if len(appEntrArgs.Entries) > 0 || !(*opt)._state.shouldIgnoreHeartbeats() {
+			// Election timeout is stopped in handleAppendEntries if necessary
+			var response, signatureVerified = (*opt)._state.handleAppendEntries(appEntrArgs)
+			(*opt).appendEntriesResponseChan <- response
+			if response.Success && (*opt)._state.hasVoted() {
+				(*opt)._state.clearPendingVotes()
+			}
+			if signatureVerified {
+				checkNewConfigurations(opt, appEntrArgs)
+			}
+			if len(appEntrArgs.Entries) > 0 {
+				broadcastAppendEntriesResponse(opt, response)
+			}
 		}
 	// Receive a RequestVoteRPC
 	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
@@ -538,7 +536,7 @@ func handleCandidate(opt *options) {
 		installSnapshot(opt, installSnapshotArgs)
 	// Receive a response to an issued RequestVoteRPC
 	case reqVoteResponse := <-(*opt).myRequestVoteResponseChan:
-		// log.Trace("Received RequestVoteRPC response from: ", (*reqVoteResponse).Id)
+		log.Info("Received RequestVoteRPC response from: ", (*reqVoteResponse).Id, " ", (*reqVoteResponse).VoteGranted)
 		if becomeLeader := (*opt)._state.updateElection(reqVoteResponse); becomeLeader {
 			sendAppendEntriesRPCs(opt)
 		}
@@ -725,7 +723,10 @@ func handleLeader(opt *options) {
 		}
 	// Receive a RequestVoteRPC
 	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
-		reqVoteArgs.respChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
+		var requestResponse = (*opt)._state.handleRequestToVote(reqVoteArgs)
+		if requestResponse != nil {
+			reqVoteArgs.respChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
+		}
 	// Receive a response to a (previously) issued RequestVoteRPC
 	// Do nothing, just flush the channel
 	case <-(*opt).myRequestVoteResponseChan:
