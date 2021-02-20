@@ -9,16 +9,15 @@ import (
 )
 
 type AppendEntriesArgs struct {
-	Term            int
-	LeaderID        ServerID
-	PrevLogIndex    int
-	PrevLogTerm     int
-	PrevLogHash     [32]byte
-	Entries         []RaftLog
-	LeaderCommit    int
-	CurrentVotesNew map[ServerID]RequestVoteResponse
-	CurrentVotesOld map[ServerID]RequestVoteResponse
-	Signature       []byte
+	Term         int
+	LeaderID     ServerID
+	PrevLogIndex int
+	PrevLogTerm  int
+	PrevLogHash  [32]byte
+	Entries      []RaftLog
+	LeaderCommit int
+	CurrentVotes map[ServerID]RequestVoteResponse
+	Signature    []byte
 }
 
 type AppendEntriesResponse struct {
@@ -55,9 +54,7 @@ type InstallSnapshotArgs struct {
 	LastIncludedIndex   int
 	LastIncludedTerm    int
 	Data                []byte
-	ServerConfiguration map[ServerID][2]bool
-	OldServerCount      int
-	NewServerCount      int
+	ServerConfiguration map[ServerID]bool
 	Hash                [32]byte
 	Signature           []byte
 }
@@ -96,6 +93,16 @@ type UpdateLeaderResponse struct {
 	LeaderID ServerID
 }
 
+type AddRemoveServerArgs struct {
+	Server ServerID
+	Add    bool
+}
+
+type AddRemoveServerResponse struct {
+	Success  bool
+	LeaderID ServerID
+}
+
 type RaftListener struct {
 	AppendEntriesArgsChan          chan *AppendEntriesArgs
 	AppendEntriesResponseChan      chan *AppendEntriesResponse
@@ -105,6 +112,7 @@ type RaftListener struct {
 	InstallSnapshotArgsChan        chan *InstallSnapshotArgs
 	InstallSnapshtResponseChan     chan *InstallSnapshotResponse
 	MessageChan                    chan gameAction
+	ConfigurationChan              chan configurationAction
 	UpdateLeaderArgsChan           chan *UpdateLeaderArgs
 	UpdateLeaderResponseChan       chan *UpdateLeaderResponse
 	clientKeys                     map[string]*rsa.PublicKey
@@ -120,6 +128,7 @@ func initRaftListener(lstOptions *options) *RaftListener {
 		(*lstOptions).installSnapshotArgsChan,
 		(*lstOptions).installSnapshotResponseChan,
 		(*lstOptions).msgChan,
+		(*lstOptions).confChan,
 		(*lstOptions).updateLeaderArgsChan,
 		(*lstOptions).updateLeaderResponseChan,
 		(*lstOptions).clientKeys}
@@ -136,7 +145,6 @@ func (listener *RaftListener) AppendEntriesRPC(args *AppendEntriesArgs, reply *A
 	if len((*args).Entries) > 0 {
 		log.Info("Respond to AppendEntriesRPC: ", (*args).LeaderID, " ", (*args).PrevLogIndex)
 	}
-	// TODO handle timeout
 	return nil
 }
 
@@ -190,7 +198,21 @@ func (listener *RaftListener) InstallSnapshotRPC(args *InstallSnapshotArgs, repl
 	reply.LastIncludedTerm = repl.LastIncludedTerm
 	reply.Signature = repl.Signature
 	log.Info("Respond to InstallSnapshotRPC: ", (*args).Id, " ", repl.Success)
-	// TODO handle timeout
+	return nil
+}
+
+func (listener *RaftListener) AddRemoveServerRPC(args *AddRemoveServerArgs, reply *AddRemoveServerResponse) error {
+	chanApplied := make(chan bool, 1)
+	chanResponse := make(chan *AddRemoveServerResponse)
+	var act = configurationAction{
+		ConfigurationLog{args.Add, args.Server, chanApplied},
+		chanResponse}
+
+	listener.ConfigurationChan <- act
+	repl := <-chanResponse
+	reply.Success = repl.Success
+	reply.LeaderID = repl.LeaderID
+	log.Info("Respond to AddRemoveServerRPC: ", (*args).Server, " ", repl.Success)
 	return nil
 }
 

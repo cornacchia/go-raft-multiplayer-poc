@@ -25,6 +25,8 @@ import (
 
 type options struct {
 	actionChan             chan engine.GameLog
+	configurationChan      chan bool
+	firstLeader            raft.ServerID
 	connections            *sync.Map
 	otherServers           []raft.ServerID
 	id                     raft.ServerID
@@ -35,6 +37,7 @@ type options struct {
 	requestNewServerIDChan chan bool
 	getNewServerIDChan     chan raft.ServerID
 	clientPrivateKey       *rsa.PrivateKey
+	removedFromGameChan    chan bool
 }
 
 func checkError(err error) {
@@ -106,7 +109,7 @@ func broadcastUpdateLeaderRPC(opt *options, updateLeaderArgs *raft.UpdateLeaderA
 				}
 			case <-time.After(time.Millisecond * 500):
 				log.Warning("UpdateLeaderRPC: Did not receive response from: " + string(id))
-				(*opt).requestConnectionChan <- raft.RequestConnection{id, [2]bool{false, true}, (*opt).connections}
+				(*opt).requestConnectionChan <- raft.RequestConnection{id, (*opt).connections}
 			}
 		}(opt, actionCall, id.(raft.ServerID))
 
@@ -114,17 +117,8 @@ func broadcastUpdateLeaderRPC(opt *options, updateLeaderArgs *raft.UpdateLeaderA
 	})
 }
 
-func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, changeConnectionChan chan raft.ServerID, msg engine.GameLog, timestamp int64, currentConnection raft.ServerID, opt *options) {
-	var waitTime time.Duration = 5000
-	if msg.Action.Action == engine.CONNECT {
-		waitTime = 5000
-	}
-	if call == nil {
-		time.Sleep(time.Millisecond * 300)
-		(*opt).actionChan <- msg
-		return
-	}
-
+func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, changeConnectionChan chan raft.ServerID, msg engine.GameLog, timestamp int64, currentConnection raft.ServerID, opt *options, actionDoneChannel chan bool) {
+	var waitTime time.Duration = 1000
 	select {
 	case <-call.Done:
 		if !(*response).Applied {
@@ -133,56 +127,94 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, changeC
 				addToKnownServers(opt, (*response).LeaderID)
 				changeConnectionChan <- (*response).LeaderID
 			} else {
-				(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, [2]bool{false, true}, (*opt).connections}
+				(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, (*opt).connections}
+				changeConnectionChan <- (*opt).id
+			}
+			actionDoneChannel <- false
+		} else {
+			if (*opt).mode == "Test" {
+				var now = getNowMs()
+				log.Info("Main - Action time: ", (now - timestamp), " - ", msg.ActionId)
+			}
+			actionDoneChannel <- true
+		}
+
+	case <-time.After(time.Millisecond * waitTime):
+		if (*opt).mode == "Test" {
+			log.Info("Main - Action dropped - ", currentConnection, " - ", msg.ActionId)
+		}
+		// changeConnectionChan <- ""
+		var updateLeaderArgs = raft.UpdateLeaderArgs{string(msg.Id), raft.ServerID(currentConnection), []byte{}}
+		updateLeaderArgs.Signature = getUpdateLeaderSignature((*opt).clientPrivateKey, &updateLeaderArgs)
+		broadcastUpdateLeaderRPC(opt, &updateLeaderArgs, changeConnectionChan)
+	}
+}
+
+func handleConfigurationResponse(call *rpc.Call, response *raft.AddRemoveServerResponse, changeConnectionChan chan raft.ServerID, msg bool, currentConnection raft.ServerID, opt *options) {
+	var waitTime time.Duration = 5000
+	if call == nil {
+		time.Sleep(time.Millisecond * 300)
+		(*opt).configurationChan <- msg
+		return
+	}
+	select {
+	case <-call.Done:
+		if !(*response).Success {
+			log.Trace("Main - Connection not applied ", currentConnection, " - ", (*response))
+			if (*response).LeaderID != "" {
+				addToKnownServers(opt, (*response).LeaderID)
+				changeConnectionChan <- (*response).LeaderID
+			} else {
+				(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, (*opt).connections}
 				changeConnectionChan <- (*opt).id
 			}
 			time.Sleep(time.Millisecond * 300)
 			// Send again
-			(*opt).actionChan <- msg
-		} else if msg.Action.Action == engine.CONNECT {
-			(*opt).connectedChan <- true
-		} else if msg.Action.Action == engine.DISCONNECT {
-			(*opt).disconnectedChan <- true
-		} else if (*opt).mode == "Test" {
-			var now = getNowMs()
-			log.Info("Main - Action time: ", (now - timestamp))
+			(*opt).configurationChan <- msg
+		} else {
+			if msg {
+				(*opt).connectedChan <- true
+			} else {
+				(*opt).disconnectedChan <- true
+			}
 		}
 	case <-time.After(time.Millisecond * waitTime):
-		if msg.Action.Action == engine.CONNECT {
-			log.Debug("Main - Timeout connecting to raft network - ", currentConnection, " - ", msg)
-		} else if msg.Action.Action != engine.DISCONNECT && (*opt).mode == "Test" {
-			log.Info("Main - Action dropped - ", currentConnection, " - ", msg)
+		if (*opt).mode == "Test" {
+			log.Info("Main - Connection dropped - ", currentConnection)
 		}
-		var updateLeaderArgs = raft.UpdateLeaderArgs{string(msg.Id), raft.ServerID(currentConnection), []byte{}}
-		updateLeaderArgs.Signature = getUpdateLeaderSignature((*opt).clientPrivateKey, &updateLeaderArgs)
-		broadcastUpdateLeaderRPC(opt, &updateLeaderArgs, changeConnectionChan)
-		// changeConnectionChan <- ""
-		(*opt).actionChan <- msg
+		changeConnectionChan <- ""
+		(*opt).configurationChan <- msg
 	}
 }
 
 func manageActions(opt *options) {
-	(*opt).requestNewServerIDChan <- true
-	currentConnection := <-(*opt).getNewServerIDChan
+	currentConnection := (*opt).firstLeader
 	changeConnectionChan := make(chan raft.ServerID)
+	var actions []engine.GameLog
+	var clearToSend = true
+	actionDoneChannel := make(chan bool)
 	for {
 		select {
 		case msg := <-(*opt).actionChan:
-			var timestamp = getNowMs()
-			var actionResponse raft.ActionResponse
-			var jsonAction, _ = json.Marshal(msg.Action)
-			var actionArgs = raft.ActionArgs{string(msg.Id), msg.ActionId, msg.Type, jsonAction, []byte{}}
-			actionArgs.Signature = getActionArgsSignature((*opt).clientPrivateKey, &actionArgs)
+			if len(actions) < 256 {
+				actions = append(actions, msg)
+			} else {
+				log.Debug("Too many actions, drop one")
+			}
+		case msg := <-(*opt).configurationChan:
+			var configurationResponse raft.AddRemoveServerResponse
+			var configurationArgs = raft.AddRemoveServerArgs{(*opt).id, msg}
 			var conn, found = (*(*opt).connections).Load(currentConnection)
 			if !found {
-				(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, [2]bool{false, true}, (*opt).connections}
-				go handleActionResponse(nil, nil, changeConnectionChan, msg, timestamp, currentConnection, opt)
+				(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, (*opt).connections}
+				go handleConfigurationResponse(nil, nil, changeConnectionChan, msg, currentConnection, opt)
 				(*opt).requestNewServerIDChan <- true
 				currentConnection = <-(*opt).getNewServerIDChan
 			} else {
+				log.Info("Main - Send connection request to ", currentConnection)
 				var raftConn = conn.(raft.RaftConnection)
-				actionCall := raftConn.Connection.Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
-				go handleActionResponse(actionCall, &actionResponse, changeConnectionChan, msg, timestamp, currentConnection, opt)
+				actionCall := raftConn.Connection.Go("RaftListener.AddRemoveServerRPC", &configurationArgs, &configurationResponse, nil)
+				go handleConfigurationResponse(actionCall, &configurationResponse, changeConnectionChan, msg, currentConnection, opt)
 			}
 		case newServerID := <-changeConnectionChan:
 			if newServerID == "" {
@@ -194,7 +226,36 @@ func manageActions(opt *options) {
 
 			var _, found = (*(*opt).connections).Load(currentConnection)
 			if !found {
-				(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, [2]bool{false, true}, (*opt).connections}
+				(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, (*opt).connections}
+			}
+		case done := <-actionDoneChannel:
+			clearToSend = true
+			if done && len(actions) > 0 {
+				if actions[0].Action.Action == engine.DISCONNECT {
+					(*opt).removedFromGameChan <- true
+				}
+				copy(actions, actions[1:])
+				actions = actions[:len(actions)-1]
+			}
+		case <-time.After(time.Millisecond * 20):
+			if clearToSend && len(actions) > 0 {
+				clearToSend = false
+				var msg = actions[0]
+				var timestamp = getNowMs()
+				var actionResponse raft.ActionResponse
+				var jsonAction, _ = json.Marshal(msg.Action)
+				var actionArgs = raft.ActionArgs{string(msg.Id), msg.ActionId, msg.Type, jsonAction, []byte{}}
+				actionArgs.Signature = getActionArgsSignature((*opt).clientPrivateKey, &actionArgs)
+				var conn, found = (*(*opt).connections).Load(currentConnection)
+				if !found {
+					(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, (*opt).connections}
+					(*opt).requestNewServerIDChan <- true
+					currentConnection = <-(*opt).getNewServerIDChan
+				} else {
+					var raftConn = conn.(raft.RaftConnection)
+					actionCall := raftConn.Connection.Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
+					go handleActionResponse(actionCall, &actionResponse, changeConnectionChan, msg, timestamp, currentConnection, opt, actionDoneChannel)
+				}
 			}
 		}
 	}
@@ -286,15 +347,21 @@ func main() {
 
 		log.SetOutput(logOutputFile)
 	}
-
 	go handlePrematureTermination(termChan, connectedChan)
 
 	var playerID = engine.PlayerID(port)
 	var serverID = raft.ServerID(port)
+	var firstLeader = raft.ServerID("")
 	// Get other servers
 	otherServers := make([]raft.ServerID, 0)
 	for i := 4; i < len(args); i++ {
 		otherServers = append(otherServers, raft.ServerID(args[i]))
+	}
+
+	if len(otherServers) > 0 {
+		firstLeader = otherServers[0]
+	} else {
+		firstLeader = serverID
 	}
 
 	// Client nodeMode: UI + Engine + Raft node
@@ -302,6 +369,7 @@ func main() {
 	var mainDisconnectedChan = make(chan bool)
 	var nodeConnectedChan = make(chan bool)
 	var uiActionChan = make(chan engine.GameLog)
+	var uiConfChan = make(chan bool)
 	var stateReqChan chan bool
 	var stateChan chan engine.GameState
 	var actionChan chan raft.GameLog
@@ -311,14 +379,16 @@ func main() {
 	var requestConnectionChan = make(chan raft.RequestConnection)
 	var requestNewServerIDChan = make(chan bool)
 	var getNewServerIDChan = make(chan raft.ServerID)
-
+	var removedFromGameChan = make(chan bool)
 	stateReqChan, stateChan, actionChan = engine.Start(playerID, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan)
 
 	var _ = raft.Start(nodeMode, port, otherServers, actionChan, nodeConnectedChan, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan, nodeKeys, clientKeys, nodePrivateKey)
-	var nodeConnections, _ = raft.ConnectToRaftServers(nil, raft.ServerID(port), otherServers)
+	var nodeConnections = raft.ConnectToRaftServers(nil, raft.ServerID(port), otherServers)
 
 	var opt = options{
 		uiActionChan,
+		uiConfChan,
+		firstLeader,
 		nodeConnections,
 		otherServers,
 		serverID,
@@ -328,13 +398,14 @@ func main() {
 		requestConnectionChan,
 		requestNewServerIDChan,
 		getNewServerIDChan,
-		clientPrivateKey}
+		clientPrivateKey,
+		removedFromGameChan}
 	go connectionPool(&opt)
 	go raft.ConnectionManager(nil, requestConnectionChan)
 	go manageActions(&opt)
 
 	if len(otherServers) > 0 {
-		uiActionChan <- engine.GameLog{playerID, ui.GetActionID(), "Connect", engine.ActionImpl{engine.CONNECT}}
+		uiConfChan <- true
 		// Wait for the node to be fully connected
 		<-mainConnectedChan
 		// Notify the raft node
@@ -351,6 +422,8 @@ func main() {
 	<-termChan
 	log.Info("Main - Shutting down")
 	uiActionChan <- engine.GameLog{playerID, ui.GetActionID(), "Disconnect", engine.ActionImpl{engine.DISCONNECT}}
+	<-removedFromGameChan
+	uiConfChan <- false
 	select {
 	case <-mainDisconnectedChan:
 		log.Info("Main - Shutdown complete (clean)")

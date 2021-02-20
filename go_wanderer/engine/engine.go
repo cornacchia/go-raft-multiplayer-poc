@@ -185,6 +185,9 @@ func applyAction(state *GameState, playerID PlayerID, action ActionImpl, opt *en
 		if playerID == (*opt).playerID {
 			(*opt).currentTurnChan <- (*state).Players[playerID].LastActionTurn
 		}
+	case DISCONNECT:
+		// Remove player from game
+		delete((*state).Players, playerID)
 	}
 	//log.Info(stateToString(state))
 	changed, turn := checkIfTurnChanged(opt, state)
@@ -199,7 +202,11 @@ func run(opt *engineOptions) {
 	for {
 		select {
 		case <-(*opt).requestState:
-			(*opt).stateChan <- gameState
+			stateToSend := GameState{make(map[PlayerID]PlayerState)}
+			for key, value := range gameState.Players {
+				stateToSend.Players[key] = value
+			}
+			(*opt).stateChan <- stateToSend
 		case <-(*opt).snapshotRequestChan:
 			jsonGameState, _ := json.Marshal(gameState)
 			(*opt).snapshotResponseChan <- jsonGameState

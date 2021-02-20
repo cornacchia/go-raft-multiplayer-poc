@@ -23,6 +23,7 @@ type execStats struct {
 	startTs         *time.Time
 	endTs           *time.Time
 	durationSeconds float64
+	lastRaftLog     int
 }
 
 type results struct {
@@ -31,6 +32,7 @@ type results struct {
 	actionsPerSecond float64
 	actionDelay      float64
 	droppedActions   float64
+	unconnectedNodes float64
 }
 
 var openCmds = [1024]*exec.Cmd{}
@@ -45,8 +47,8 @@ func newCommand(pkgToTest string, mode string, ports []string, idx int) {
 	openCmds[idx] = cmd
 	cmd.Start()
 	if err := cmd.Wait(); err != nil {
-		log.Debug("Error starting command ", cmd.Path, " ", cmd.Args)
-		log.Debug(err)
+		log.Trace("Error starting command ", cmd.Path, " ", cmd.Args)
+		log.Trace(err)
 	}
 }
 
@@ -59,9 +61,9 @@ func killProcess(i int, signal syscall.Signal) {
 
 func killAll(pkgToTest string) {
 	cmd := exec.Command("killall", "-SIGKILL", pkgToTest)
-	log.Debug("Killing all workers")
+	log.Trace("Killing all workers")
 	err := cmd.Run()
-	log.Debug("Killing finished with error: ", err)
+	log.Trace("Killing finished with error: ", err)
 }
 
 func analyzeNodeBehavior(node int) execStats {
@@ -75,7 +77,7 @@ func analyzeNodeBehavior(node int) execStats {
 	var regTs = regexp.MustCompile("Main - Action time: ([0-9]+)")
 	var regDropped = regexp.MustCompile("Main - Action dropped - ")
 	var regTimestamp = regexp.MustCompile("time=\"(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}.\\d{3}\\d{3})\"")
-	var stats = execStats{node, 0, 0, 0, nil, nil, -1}
+	var stats = execStats{node, 0, 0, 0, nil, nil, -1, 0}
 
 	file, _ := os.Open("/tmp/go_raft_log_" + fmt.Sprint(node))
 	fileScanner := bufio.NewScanner(file)
@@ -130,15 +132,17 @@ func analyzeNodeBehavior(node int) execStats {
 		}
 	}
 	if lastTurn >= 0 {
-		log.Debug(fmt.Sprintf("Node %d: last turn %d\n", node, lastTurn))
+		log.Debug("Last turn: ", lastTurn)
 	}
-	log.Debug(fmt.Sprintf("Node %d: last received raft log %d\n", node, lastRaftLogReceived))
+	log.Debug("N. of actions: ", stats.nOfValues)
+	log.Debug("Last received raft log: ", lastRaftLogReceived)
+	stats.lastRaftLog = lastRaftLogReceived
 	stats.durationSeconds = (*stats.endTs).Sub((*stats.startTs)).Seconds()
 	return stats
 }
 
 func appendResultsToFile(filename string, res results) {
-	var text = fmt.Sprintf("%d %.3f %.3f %.3f %.3f", res.nodes, res.actionsSent, res.actionsPerSecond, res.actionDelay, res.droppedActions)
+	var text = fmt.Sprintf("%d %.3f %.3f %.3f %.3f %.3f", res.nodes, res.actionsSent, res.actionsPerSecond, res.actionDelay, res.droppedActions, res.unconnectedNodes)
 	f, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
 	if err != nil {
 		panic(err)
@@ -158,6 +162,7 @@ func elaborateResults(start int, clientStart int, stop int, pkgToTest string, te
 	var totalActionsPerSecond = 0.0
 	var nOfEntries int = 0
 	var notStarted int = 0
+	var unconnectedNodes float64 = 0
 	for i := start; i < stop; i++ {
 		result := analyzeNodeBehavior(6666 + i)
 		if i >= clientStart {
@@ -172,6 +177,9 @@ func elaborateResults(start int, clientStart int, stop int, pkgToTest string, te
 			} else {
 				notStarted++
 			}
+			if result.lastRaftLog < 0 {
+				unconnectedNodes += 1.0
+			}
 		}
 	}
 	if notStarted > 0 {
@@ -181,11 +189,8 @@ func elaborateResults(start int, clientStart int, stop int, pkgToTest string, te
 	var resultDropped = float64(totalDropped) / float64(nOfEntries)
 	var resultActionSent = float64(totalActionSent) / float64(nOfEntries)
 	var actionsPerSecond = totalActionsPerSecond / float64(nOfEntries)
-	log.Info(fmt.Sprintf("Mean for %d nodes => actions: %.3f, actions per second: %.3f, delay: %.3f, dropped: %.3f", stop, resultActionSent, actionsPerSecond, resultActionDelayMs, resultDropped))
-	if resultDropped > 100 {
-		panic("Something wrong with dropped packets")
-	}
-	return results{stop, resultActionSent, actionsPerSecond, resultActionDelayMs, resultDropped}
+	log.Info(fmt.Sprintf("Mean for %d nodes => actions: %.3f, actions per second: %.3f, delay: %.3f, dropped: %.3f, unconnected: %.3f", stop, resultActionSent, actionsPerSecond, resultActionDelayMs, resultDropped, unconnectedNodes))
+	return results{stop, resultActionSent, actionsPerSecond, resultActionDelayMs, resultDropped, unconnectedNodes}
 }
 
 func waitSomeTime(duration time.Duration, retChans []chan bool) {
@@ -287,11 +292,11 @@ func testNodesNormal(testMode string, pkgToTest string, number int, testTime int
 	retChan <- elaborateResults(0, 0, number, pkgToTest, testTime, testMode)
 }
 
-func testNormal(testMode string, start int, stop int, step int, testTime int, repetitions int, pkgToTest string) {
+func testNormal(testMode string, start int, stop int, step int, testTime int, repetitions int, pkgToTest string, resultFile string) {
 	for i := start; i <= stop; i += step {
 		removeAllKeys()
 		generateKeys(6666, 6666+i)
-		var gr = results{i, 0.0, 0.0, 0.0, 0.0}
+		var gr = results{i, 0.0, 0.0, 0.0, 0.0, 0.0}
 		retChan := make(chan results)
 		for j := 0; j < repetitions; j++ {
 			go testNodesNormal(testMode, pkgToTest, i, testTime, retChan)
@@ -300,14 +305,18 @@ func testNormal(testMode string, start int, stop int, step int, testTime int, re
 			gr.actionsPerSecond += cr.actionsPerSecond
 			gr.actionDelay += cr.actionDelay
 			gr.droppedActions += cr.droppedActions
+			gr.unconnectedNodes += cr.unconnectedNodes
 			time.Sleep(time.Second * 10)
 		}
 		gr.actionsSent = gr.actionsSent / float64(repetitions)
 		gr.actionsPerSecond = gr.actionsPerSecond / float64(repetitions)
 		gr.actionDelay = gr.actionDelay / float64(repetitions)
 		gr.droppedActions = gr.droppedActions / float64(repetitions)
-		log.Info(fmt.Sprintf("Mean results for %d nodes and %d repetitions => actions: %.3f, actions per second: %.3f, delay: %.3f, dropped: %.3f", i, repetitions, gr.actionsSent, gr.actionsPerSecond, gr.actionDelay, gr.droppedActions))
-		appendResultsToFile("./results/"+pkgToTest+"_"+testMode, gr)
+		gr.unconnectedNodes = gr.unconnectedNodes / float64(repetitions)
+		log.Info(fmt.Sprintf("Mean results for %d nodes and %d repetitions => actions: %.3f, actions per second: %.3f, delay: %.3f, dropped: %.3f, unconnected: %.3f", i, repetitions, gr.actionsSent, gr.actionsPerSecond, gr.actionDelay, gr.droppedActions, gr.unconnectedNodes))
+		if resultFile != "" {
+			appendResultsToFile("./results/"+resultFile, gr)
+		}
 	}
 }
 
@@ -365,11 +374,11 @@ func testNodesDynamic(testMode string, killInterval int, testTime int, pkgToTest
 	retChan <- elaborateResults(0, 0, len(nodesToTest), pkgToTest, testTime, testMode)
 }
 
-func testDynamic(testMode string, start int, stop int, step int, testTime int, repetitions int, pkgToTest string, signal syscall.Signal) {
+func testDynamic(testMode string, start int, stop int, step int, testTime int, repetitions int, pkgToTest string, resultFile string, signal syscall.Signal) {
 	removeAllKeys()
 	generateKeys(6666, 6670)
 	for i := start; i <= stop; i += step {
-		var gr = results{i, 0.0, 0.0, 0.0, 0.0}
+		var gr = results{i, 0.0, 0.0, 0.0, 0.0, 0.0}
 		retChan := make(chan results)
 		for j := 0; j < repetitions; j++ {
 			go testNodesDynamic(testMode, i, testTime, pkgToTest, retChan, signal)
@@ -384,7 +393,12 @@ func testDynamic(testMode string, start int, stop int, step int, testTime int, r
 		gr.actionsPerSecond = gr.actionsPerSecond / float64(repetitions)
 		gr.actionDelay = gr.actionDelay / float64(repetitions)
 		gr.droppedActions = gr.droppedActions / float64(repetitions)
-		appendResultsToFile("./results/"+pkgToTest+"_"+testMode, gr)
+		gr.unconnectedNodes = gr.unconnectedNodes / float64(repetitions)
+		log.Info(fmt.Sprintf("Mean results for %d nodes and %d repetitions => actions: %.3f, actions per second: %.3f, delay: %.3f, dropped: %.3f, unconnected: %.3f", i, repetitions, gr.actionsSent, gr.actionsPerSecond, gr.actionDelay, gr.droppedActions, gr.unconnectedNodes))
+
+		if resultFile != "" {
+			appendResultsToFile("./results/"+resultFile, gr)
+		}
 	}
 }
 
@@ -414,11 +428,34 @@ func estimateTimeOfExecution(start int, stop int, step int, testTime int, repeti
 	return result
 }
 
+func testPackage(testMode string, pkgToTest string, start int, stop int, step int, testTime int, repetitions int, resultFile string) {
+	if resultFile != "" {
+		os.Remove("./results/" + resultFile)
+	}
+
+	completeChan := make(chan bool)
+	termChan := make(chan os.Signal)
+	signal.Notify(termChan, syscall.SIGTERM, syscall.SIGINT)
+
+	go handlePrematureTermination(pkgToTest, termChan, completeChan)
+
+	if testMode == "normal" {
+		testNormal(testMode, start, stop, step, testTime, repetitions, pkgToTest, resultFile)
+	} else if testMode == "dynamic" {
+		testDynamic(testMode, start, stop, step, testTime, repetitions, pkgToTest, resultFile, syscall.SIGTERM)
+	} else if testMode == "faulty" {
+		testDynamic(testMode, start, stop, step, testTime, repetitions, pkgToTest, resultFile, syscall.SIGKILL)
+	}
+
+	completeChan <- true
+	time.Sleep(time.Second * 5)
+}
+
 func main() {
 	log.SetLevel(log.InfoLevel)
 	args := os.Args
 	if len(args) < 8 {
-		log.Fatal("Usage: go_test <dynamic | faulty | normal> <go_skeletons | go_wanderer> <repetitions> <test time> <start> <finish> <step>")
+		log.Fatal("Usage: go_test <dynamic | faulty | normal> <go_skeletons | go_wanderer | both> <repetitions> <test time> <start> <finish> <step> <result_file>")
 	}
 	var testMode = args[1]
 	var pkgToTest = args[2]
@@ -435,27 +472,22 @@ func main() {
 	start, _ = strconv.Atoi(startStr)
 	stop, _ = strconv.Atoi(stopStr)
 	step, _ = strconv.Atoi(stepStr)
-
-	var estTimeOfExecution = estimateTimeOfExecution(start, stop, step, testTime, repetitions, testMode)
-	log.Info(fmt.Sprintf("Est. time to wait: %.2f seconds (~%d minutes)", estTimeOfExecution, int(estTimeOfExecution)/60))
-
-	os.Remove("./results/" + pkgToTest + "_" + testMode)
-
-	completeChan := make(chan bool)
-	termChan := make(chan os.Signal)
-	signal.Notify(termChan, syscall.SIGTERM, syscall.SIGINT)
-
-	go handlePrematureTermination(pkgToTest, termChan, completeChan)
-
-	if testMode == "normal" {
-		testNormal(testMode, start, stop, step, testTime, repetitions, pkgToTest)
-	} else if testMode == "dynamic" {
-		testDynamic(testMode, start, stop, step, testTime, repetitions, pkgToTest, syscall.SIGTERM)
-	} else if testMode == "faulty" {
-		testDynamic(testMode, start, stop, step, testTime, repetitions, pkgToTest, syscall.SIGKILL)
+	var resultFile = ""
+	if len(args) > 8 {
+		resultFile = args[8]
 	}
 
-	completeChan <- true
-	time.Sleep(time.Second * 5)
+	var estTimeOfExecution = estimateTimeOfExecution(start, stop, step, testTime, repetitions, testMode)
+	if pkgToTest == "both" {
+		estTimeOfExecution *= 2
+	}
+	log.Info(fmt.Sprintf("Est. time to wait: %.2f seconds (~%d minutes)", estTimeOfExecution, int(estTimeOfExecution)/60))
+
+	if pkgToTest == "both" {
+		testPackage(testMode, "go_skeletons", start, stop, step, testTime, repetitions, resultFile)
+		testPackage(testMode, "go_wanderer", start, stop, step, testTime, repetitions, resultFile)
+	} else {
+		testPackage(testMode, pkgToTest, start, stop, step, testTime, repetitions, resultFile)
+	}
 	os.Exit(0)
 }

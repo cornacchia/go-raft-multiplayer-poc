@@ -26,10 +26,8 @@ func getRaftLogBytes(rl RaftLog) []byte {
 	binary.Write(buf, binary.LittleEndian, rl.Log.ActionId)
 	binary.Write(buf, binary.LittleEndian, rl.Log.Type)
 	binary.Write(buf, binary.LittleEndian, rl.Log.Action)
-	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.Id)
-	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.ConnMap)
-	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.OldCount)
-	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.NewCount)
+	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.Add)
+	binary.Write(buf, binary.LittleEndian, rl.ConfigurationLog.Server)
 	return buf.Bytes()
 }
 
@@ -42,8 +40,7 @@ func getAppendEntriesArgsBytes(aea *AppendEntriesArgs) [32]byte {
 	binary.Write(buf, binary.LittleEndian, (*aea).PrevLogHash)
 	binary.Write(buf, binary.LittleEndian, (*aea).Entries)
 	binary.Write(buf, binary.LittleEndian, (*aea).LeaderCommit)
-	binary.Write(buf, binary.LittleEndian, (*aea).CurrentVotesNew)
-	binary.Write(buf, binary.LittleEndian, (*aea).CurrentVotesOld)
+	binary.Write(buf, binary.LittleEndian, (*aea).CurrentVotes)
 
 	return sha256.Sum256(buf.Bytes())
 }
@@ -117,8 +114,6 @@ func getInstallSnapshotArgsBytes(isa *InstallSnapshotArgs) [32]byte {
 	binary.Write(buf, binary.LittleEndian, (*isa).LastIncludedTerm)
 	binary.Write(buf, binary.LittleEndian, (*isa).Data)
 	binary.Write(buf, binary.LittleEndian, (*isa).ServerConfiguration)
-	binary.Write(buf, binary.LittleEndian, (*isa).OldServerCount)
-	binary.Write(buf, binary.LittleEndian, (*isa).NewServerCount)
 	binary.Write(buf, binary.LittleEndian, (*isa).Hash)
 
 	return sha256.Sum256(buf.Bytes())

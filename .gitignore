@@ -6,3 +6,4 @@ go_test/results
 raft-analyzer/www
 keys/clients
 keys/nodes
+final_results
