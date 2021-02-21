@@ -6,6 +6,8 @@ import (
 	"go_raft/raft"
 	"math"
 	"strconv"
+
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -187,6 +189,7 @@ func run(opt *engineOptions) {
 		case newAction := <-(*opt).actionChan:
 			var playerID = PlayerID(newAction.Id)
 			var action ActionImpl
+			log.Debug("Engine - player: ", playerID, " action:", newAction.ActionId)
 			json.Unmarshal(newAction.Action, &action)
 			applyAction(&gameState, playerID, action)
 		}

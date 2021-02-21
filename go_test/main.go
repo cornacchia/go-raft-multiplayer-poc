@@ -282,8 +282,12 @@ func testNodesNormal(testMode string, pkgToTest string, number int, testTime int
 		nodesToTest[i] = thisArgs
 	}
 
-	for i, nodes := range nodesToTest {
-		go newCommand(pkgToTest, "Bot", nodes, i, "Full")
+	for i := 0; i < 5; i++ {
+		if i == 1 {
+			go newCommand(pkgToTest, "Rogue3", nodesToTest[i], i, "Full")
+		} else {
+			go newCommand(pkgToTest, "Bot", nodesToTest[i], i, "Full")
+		}
 		time.Sleep(time.Millisecond * 10)
 	}
 

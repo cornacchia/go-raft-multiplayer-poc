@@ -459,12 +459,6 @@ func handleUpdateLeaderMessages(opt *options) {
  * RPCs from a Leader or Candidate.
  */
 func handleFollower(opt *options) {
-	if (*opt).mode == "Rogue2" {
-		(*opt)._state.startElection()
-		var requestVoteArgs = (*opt)._state.prepareRequestVoteRPC()
-		sendRequestVoteRPCs(opt, requestVoteArgs)
-		return
-	}
 	var electionTimeoutTimer = (*opt)._state.checkElectionTimeout()
 	select {
 	// Receive an AppendEntriesRPC
@@ -798,6 +792,7 @@ func checkConfigurationsToStart(opt *options) {
 }
 
 func run(opt *options) {
+	var currentTurn = 0
 	go handleClientMessages(opt)
 	go handleAppendEntriesRPCResponses(opt)
 	go handleInstallSnapshotResponses(opt)
@@ -809,14 +804,22 @@ func run(opt *options) {
 		(*opt)._state.updateCommitIndex()
 		checkLogsToApply(opt)
 		checkConfigurationsToStart(opt)
-		switch (*opt)._state.getState() {
-		case Follower:
-			handleFollower(opt)
-		case Candidate:
-			handleCandidate(opt)
-		case Leader:
-			handleLeader(opt)
+		if (*opt).mode == "Rogue2" && currentTurn > 100 {
+			(*opt)._state.startElection()
+			var requestVoteArgs = (*opt)._state.prepareRequestVoteRPC()
+			sendRequestVoteRPCs(opt, requestVoteArgs)
+			time.Sleep(time.Millisecond * 100)
+		} else {
+			switch (*opt)._state.getState() {
+			case Follower:
+				handleFollower(opt)
+			case Candidate:
+				handleCandidate(opt)
+			case Leader:
+				handleLeader(opt)
+			}
 		}
+		currentTurn++
 	}
 
 }
