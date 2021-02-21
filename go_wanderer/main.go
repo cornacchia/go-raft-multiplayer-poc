@@ -226,7 +226,7 @@ func broadcastAction(opt *options, actionArgs *raft.ActionArgs, timestamp int64,
 			(*opt).requestConnectionChan <- raft.RequestConnection{id, (*opt).connections}
 			continue
 		}
-		log.Debug("Broadcast action to: ", id)
+		log.Trace("Broadcast action to: ", id)
 		var actionResponse raft.ActionResponse
 		var raftConn = conn.(raft.RaftConnection)
 		actionCall := raftConn.Connection.Go("RaftListener.ActionRPC", actionArgs, &actionResponse, nil)
@@ -239,7 +239,7 @@ func broadcastAction(opt *options, actionArgs *raft.ActionArgs, timestamp int64,
 				} else {
 					chanResponse <- true
 				}
-			case <-time.After(time.Millisecond * 500):
+			case <-time.After(time.Millisecond * 1000):
 				chanResponse <- false
 			}
 		}(opt, actionCall, &actionResponse, (*actionArgs).ActionId, id)
@@ -433,7 +433,7 @@ func main() {
 	// Seed random number generator
 	rand.Seed(time.Now().UnixNano())
 
-	log.SetLevel(log.InfoLevel)
+	log.SetLevel(log.DebugLevel)
 	customFormatter := new(log.TextFormatter)
 	customFormatter.TimestampFormat = "2006-01-02 15:04:05.000000"
 	log.SetFormatter(customFormatter)

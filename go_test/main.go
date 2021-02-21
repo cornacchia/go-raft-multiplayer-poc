@@ -284,7 +284,7 @@ func testNodesNormal(testMode string, pkgToTest string, number int, testTime int
 
 	for i, nodes := range nodesToTest {
 		go newCommand(pkgToTest, "Bot", nodes, i, "Full")
-		time.Sleep(time.Millisecond * 1000)
+		time.Sleep(time.Millisecond * 10)
 	}
 
 	waitRetChan := make(chan bool)

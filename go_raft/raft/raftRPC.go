@@ -9,16 +9,15 @@ import (
 )
 
 type AppendEntriesArgs struct {
-	Term                   int
-	LeaderID               ServerID
-	PrevLogIndex           int
-	PrevLogTerm            int
-	PrevLogHash            [32]byte
-	Entries                []RaftLog
-	LeaderCommit           int
-	CurrentVotes           map[ServerID]RequestVoteResponse
-	ConfigurationReference map[ServerID]bool
-	Signature              []byte
+	Term         int
+	LeaderID     ServerID
+	PrevLogIndex int
+	PrevLogTerm  int
+	PrevLogHash  [32]byte
+	Entries      []RaftLog
+	LeaderCommit int
+	CurrentVotes map[ServerID]RequestVoteResponse
+	Signature    []byte
 }
 
 type AppendEntriesResponse struct {

@@ -122,7 +122,6 @@ type stateImpl struct {
 	votedForTerm                int
 	votedForChan                chan *RequestVoteResponse
 	clientChanResponse          map[string]map[int64]chan bool
-	configurationReference      map[ServerID]bool
 }
 
 func raftLogToString(log RaftLog) string {
@@ -204,8 +203,7 @@ func newState(id string, otherServers []ServerID, snapshotRequestChan chan bool,
 		make(map[ServerID]appendEntriesSituationStruct),
 		-1,
 		nil,
-		make(map[string]map[int64]chan bool),
-		make(map[ServerID]bool)}
+		make(map[string]map[int64]chan bool)}
 	return &state
 }
 
@@ -402,8 +400,8 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse) bool {
 		_state.currentVotes[(*resp).Id] = *resp
 		_state.currentElectionVotes++
 
-		log.Trace("Election votes: ", _state.currentElectionVotes, "/", len(_state.serverConfiguration))
-		if _state.currentElectionVotes > len(_state.serverConfiguration)/2 {
+		log.Debug("Election votes: ", _state.currentElectionVotes, "/", ((len(_state.serverConfiguration)*2)+1)/3)
+		if _state.currentElectionVotes >= ((len(_state.serverConfiguration)*2)+1)/3 {
 			_state.lock.Unlock()
 			_state.winElection()
 			return true
@@ -420,10 +418,6 @@ func (_state *stateImpl) winElection() {
 	_state.currentElectionVotes = 0
 	_state.currentState = Leader
 	_state.currentLeader = _state.id
-	_state.configurationReference = make(map[ServerID]bool)
-	for id, _ := range _state.serverConfiguration {
-		_state.configurationReference[id] = true
-	}
 	for id := range _state.nextIndex {
 		_state.nextIndex[id] = lastLogIdx + 1
 	}
@@ -444,7 +438,6 @@ func (_state *stateImpl) prepareAppendEntriesArgs(lastLogIdx int, lastLogTerm in
 		logsToSend,
 		_state.commitIndex,
 		_state.currentVotes,
-		_state.configurationReference,
 		[]byte{}}
 	aea.Signature = getAppendEntriesArgsSignature(_state.privateKey, &aea)
 	_state.lock.Unlock()
@@ -653,8 +646,8 @@ func (_state *stateImpl) verifyAppendEntriesQuorum(aea *AppendEntriesArgs) bool 
 		}
 	}
 
-	log.Info("Verify append entries quorum (", (*aea).LeaderID, "): ", votes, "/", len((*aea).ConfigurationReference))
-	return votes > len((*aea).ConfigurationReference)/2
+	log.Info("Verify append entries quorum (", (*aea).LeaderID, "): ", votes, "/", ((len(_state.serverConfiguration)*2)+1)/3)
+	return votes >= ((len(_state.serverConfiguration)*2)+1)/3
 }
 
 func (_state *stateImpl) updateQuorum(sid ServerID, lastLogIdx int, lastLogHash [32]byte) {
@@ -689,7 +682,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEnt
 		var aer = AppendEntriesResponse{_state.id, -1, false, -1, [32]byte{}, []byte{}}
 		aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
 		_state.lock.Unlock()
-		log.Trace("Refuse AERPC signature not verified")
+		log.Debug("Refuse AERPC signature not verified")
 		return &aer, false
 	}
 	var lastLogIdx, _ = _state.getLastLogIdxTerm()
@@ -698,7 +691,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEnt
 		var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, [32]byte{}, []byte{}}
 		aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
 		_state.lock.Unlock()
-		log.Trace("Refuse AERPC term out of date")
+		log.Debug("Refuse AERPC term out of date")
 		return &aer, true
 	}
 
@@ -724,7 +717,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEnt
 			var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, [32]byte{}, []byte{}}
 			aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
 			_state.lock.Unlock()
-			log.Trace("Refuse AERPC no quorum")
+			log.Debug("Refuse AERPC no quorum")
 			return &aer, true
 		}
 	}
@@ -741,7 +734,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEnt
 				var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, [32]byte{}, []byte{}}
 				aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
 				_state.lock.Unlock()
-				log.Trace("Refuse AERPC log index not in snapshot")
+				log.Debug("Refuse AERPC log index not in snapshot: ", (*aea).PrevLogIndex, " ", lastLogIdx)
 				return &aer, true
 			}
 		} else {
@@ -750,7 +743,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEnt
 				var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, [32]byte{}, []byte{}}
 				aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
 				_state.lock.Unlock()
-				log.Trace("Refuse AERPC umatching hashes")
+				log.Debug("Refuse AERPC umatching hashes")
 				return &aer, true
 			}
 		}
@@ -791,7 +784,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEnt
 			var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, [32]byte{}, []byte{}}
 			aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
 			_state.lock.Unlock()
-			log.Trace("Refuse AERPC could not take snapshot")
+			log.Debug("Refuse AERPC could not take snapshot")
 			return &aer, true
 		}
 		_state.purgeEntriesFromSnapshottedLogs(aea)
@@ -801,7 +794,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEnt
 			var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, [32]byte{}, []byte{}}
 			aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
 			_state.lock.Unlock()
-			log.Trace("Refuse AERPC no space after snapshot")
+			log.Debug("Refuse AERPC no space after snapshot")
 			return &aer, true
 		}
 	}
@@ -866,6 +859,7 @@ func (_state *stateImpl) handleAppendEntriesResponse(aer *AppendEntriesResponse)
 		return -1, false
 	}
 	if !(*aer).Success {
+		log.Debug("Unsuccessful AppendEntriesRPC: ", (*aer).Id)
 		if (*aer).Term > _state.currentTerm {
 			log.Info("Become Follower (handleAppendEntriesRepsonse)")
 			// _state.acceptAppendEntries = false
@@ -878,6 +872,7 @@ func (_state *stateImpl) handleAppendEntriesResponse(aer *AppendEntriesResponse)
 		var snapshot = false
 		if (*aer).LastIndex >= 0 {
 			_state.nextIndex[(*aer).Id] = (*aer).LastIndex
+			log.Debug("Fix next index for : ", (*aer).Id, " ", _state.nextIndex[(*aer).Id])
 		} else {
 			_state.nextIndex[(*aer).Id] = 0
 		}
@@ -1143,32 +1138,29 @@ func (_state *stateImpl) checkLogHash(idx int, hash [32]byte) bool {
 }
 
 func (_state *stateImpl) findQuorum() int {
-	votes := make(map[int]int)
+	var votes = map[int]int{}
 	for _, val := range _state.appendEntriesSituation {
-		if _, found := votes[val.lastIndex]; !found && _state.checkLogHash(val.lastIndex, val.lastHash) {
-			votes[val.lastIndex] = 1
-			for i, _ := range votes {
-				if val.lastIndex > i {
-					votes[i]++
-				}
-			}
-		} else if _state.checkLogHash(val.lastIndex, val.lastHash) {
-			votes[val.lastIndex]++
-			for i, _ := range votes {
-				if val.lastIndex > i {
+		votes[val.lastIndex] = 0
+	}
+
+	for _, val := range _state.appendEntriesSituation {
+		if _state.checkLogHash(val.lastIndex, val.lastHash) {
+			for i := range votes {
+				if i <= val.lastIndex {
 					votes[i]++
 				}
 			}
 		}
 	}
+
 	var result = -1
 	for idx, val := range votes {
-		if val > len(_state.appendEntriesSituation)/2 && idx > result {
+		if val >= ((len(_state.serverConfiguration)*2)+1)/3 && idx > result {
 			result = idx
 		}
 	}
-	log.Debug("Find quorum: ", result, " ", votes)
-	log.Debug(_state.appendEntriesSituation)
+
+	log.Debug("Find quorum: ", result, " ", votes, " target: ", ((len(_state.serverConfiguration)*2)+1)/3)
 	return result
 }
 
@@ -1183,12 +1175,16 @@ func (_state *stateImpl) updateCommitIndex() {
 
 func (_state *stateImpl) updateAppendEntriesResponseSituation(aer *AppendEntriesResponse) {
 	_state.lock.Lock()
-	log.Info("Update append entries response situation ", (*aer).Id, " ", (*aer).LastIndex)
+	log.Trace("Update append entries response situation ", (*aer).Id, " ", (*aer).LastIndex)
 	var hashed = getAppendEntriesResponseBytes(aer)
 	err := rsa.VerifyPKCS1v15((_state.nodeKeys[(*aer).Id]), crypto.SHA256, hashed[:], (*aer).Signature)
 	if err != nil {
 		_state.lock.Unlock()
 		return
+	}
+
+	if _, found := _state.appendEntriesSituation[(*aer).Id]; !found {
+		_state.appendEntriesSituation[(*aer).Id] = appendEntriesSituationStruct{-1, [32]byte{}}
 	}
 
 	if (*aer).LastIndex > _state.appendEntriesSituation[(*aer).Id].lastIndex {
@@ -1302,6 +1298,11 @@ func (_state *stateImpl) addClientChanResponse(clientID string, actionID int64, 
 	clientMap, found := _state.clientChanResponse[clientID]
 	if !found {
 		clientMap = make(map[int64]chan bool)
+	}
+
+	actionChan, actionFound := _state.clientChanResponse[clientID][actionID]
+	if actionFound {
+		actionChan <- false
 	}
 	clientMap[actionID] = respChan
 	_state.clientChanResponse[clientID] = clientMap

@@ -418,7 +418,7 @@ func main() {
 	// Seed random number generator
 	rand.Seed(time.Now().UnixNano())
 
-	log.SetLevel(log.InfoLevel)
+	log.SetLevel(log.TraceLevel)
 	customFormatter := new(log.TextFormatter)
 	customFormatter.TimestampFormat = "2006-01-02 15:04:05.000000"
 	log.SetFormatter(customFormatter)

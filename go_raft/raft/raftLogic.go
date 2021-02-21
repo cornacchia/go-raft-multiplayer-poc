@@ -390,8 +390,8 @@ func promoteUnvotingConnection(opt *options, id ServerID, conn RaftConnection) {
 func handleAppendEntriesRPCResponses(opt *options) {
 	for {
 		appendEntriesResponse := <-(*opt).myAppendEntriesResponseChan
+		log.Debug("Received AppendEntriesResponse ", (*appendEntriesResponse).Id, " ", (*appendEntriesResponse).Success, " ", (*appendEntriesResponse).LastIndex)
 		if (*opt)._state.getState() == Leader {
-			// log.Debug("Rec AppendEntriesResponse ", appendEntriesResponse)
 			var matchIndex, snapshot = (*opt)._state.handleAppendEntriesResponse(appendEntriesResponse)
 
 			// Check if unvoting member should be promoted to voting
@@ -404,6 +404,8 @@ func handleAppendEntriesRPCResponses(opt *options) {
 				var conn, _ = (*opt).unvotingConnections.LoadAndDelete((*appendEntriesResponse).Id)
 				promoteUnvotingConnection(opt, (*appendEntriesResponse).Id, conn.(RaftConnection))
 			}
+		} else {
+			(*opt)._state.handleAppendEntriesResponse(appendEntriesResponse)
 		}
 	}
 }
