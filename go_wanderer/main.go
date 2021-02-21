@@ -444,7 +444,7 @@ func main() {
 	// Command line arguments
 	args := os.Args
 	if len(args) < 4 {
-		log.Fatal("Usage: go_wanderer <Game|Test> <Client|Node|Bot> <Port> ...<other raft ports>")
+		log.Fatal("Usage: go_wanderer <Game|Test> <Client|Node|Bot> <Append|Full> <Port> ...<other raft ports>")
 	}
 
 	mode := args[1]
