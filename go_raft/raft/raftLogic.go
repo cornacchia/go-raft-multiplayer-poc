@@ -292,20 +292,26 @@ func handleClientMessages(opt *options) {
 		case Candidate:
 			act.ChanResponse <- &ActionResponse{false, (*opt)._state.getCurrentLeader()}
 		case Leader:
-			// Handle player game action (i.e. movement)
-			if act.Msg.ActionId > (*opt)._state.getClientLastActionApplied(ServerID(act.Msg.Id)) {
-				// In this case the action is new
-				var ok = (*opt)._state.addNewGameLog(act.Msg)
-				if ok {
-					sendAppendEntriesRPCs(opt)
-					go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
-				}
-			} else {
-				// The action has already been applied, respond immediately (cft. Raft paper section 8 p.13)
-				// Note: this only prevents actions to be applied twice, i.e. it will work with snapshots
-				// because the counter will be updated naturally when new messages arrive
+			if (*opt).mode == "Rogue1" {
+				// Ignore client messages but tell them they were applied
 				go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
 				act.Msg.ChanApplied <- true
+			} else {
+				// Handle player game action (i.e. movement)
+				if act.Msg.ActionId > (*opt)._state.getClientLastActionApplied(ServerID(act.Msg.Id)) {
+					// In this case the action is new
+					var ok = (*opt)._state.addNewGameLog(act.Msg)
+					if ok {
+						sendAppendEntriesRPCs(opt)
+						go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
+					}
+				} else {
+					// The action has already been applied, respond immediately (cft. Raft paper section 8 p.13)
+					// Note: this only prevents actions to be applied twice, i.e. it will work with snapshots
+					// because the counter will be updated naturally when new messages arrive
+					go handleResponseToMessage(opt, act.Msg.ChanApplied, act.ChanResponse)
+					act.Msg.ChanApplied <- true
+				}
 			}
 		}
 	}
@@ -395,6 +401,12 @@ func handleInstallSnapshotResponses(opt *options) {
  * RPCs from a Leader or Candidate.
  */
 func handleFollower(opt *options) {
+	if (*opt).mode == "Rogue2" {
+		(*opt)._state.startElection()
+		var requestVoteArgs = (*opt)._state.prepareRequestVoteRPC()
+		sendRequestVoteRPCs(opt, requestVoteArgs)
+		return
+	}
 	var electionTimeoutTimer = (*opt)._state.checkElectionTimeout()
 	select {
 	// Receive an AppendEntriesRPC
@@ -417,7 +429,7 @@ func handleFollower(opt *options) {
 	case <-(*electionTimeoutTimer).C:
 		// Only start new elections if fully connected to the raft network
 		(*opt)._state.stopElectionTimeout()
-		if (*opt).mode == "Node" || (*opt).connected {
+		if (*opt).mode == "Node" || (*opt).mode == "Rogue1" || (*opt).connected {
 			(*opt)._state.startElection()
 			// Issue requestvoterpc in parallel to other servers
 			if (*opt)._state.countConnections() > 1 {

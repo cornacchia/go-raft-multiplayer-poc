@@ -26,6 +26,7 @@ type options struct {
 	connectedChan          chan bool
 	disconnectedChan       chan bool
 	mode                   string
+	nodeMode               string
 	requestConnectionChan  chan raft.RequestConnection
 	requestNewServerIDChan chan bool
 	getNewServerIDChan     chan raft.ServerID
@@ -189,6 +190,9 @@ func manageActions(opt *options) {
 			if clearToSend && len(actions) > 0 {
 				clearToSend = false
 				var msg = actions[0]
+				if (*opt).nodeMode == "Rogue3" {
+					msg.Id = "6668"
+				}
 				var timestamp = getNowMs()
 				var actionResponse raft.ActionResponse
 				var jsonAction, _ = json.Marshal(msg.Action)
@@ -295,6 +299,7 @@ func main() {
 		mainConnectedChan,
 		mainDisconnectedChan,
 		mode,
+		nodeMode,
 		requestConnectionChan,
 		requestNewServerIDChan,
 		getNewServerIDChan,
