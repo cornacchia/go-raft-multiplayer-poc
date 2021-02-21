@@ -342,14 +342,12 @@ func (_state *stateImpl) handleRequestToVote(wrap requestVoteArgsWrapper) *Reque
 		return &rvr
 	}
 	var lastLogIdx, lastLogTerm = _state.getLastLogIdxTerm()
-	if _state.currentTerm > (*rva).Term {
+	if _state.currentTerm >= (*rva).Term || (*rva).Term > _state.currentTerm+4 {
 		log.Info("Current term greater than Candidate term: ", _state.currentTerm, " ", (*rva).Term)
 		var rvr = RequestVoteResponse{_state.id, _state.currentTerm, false, []byte{}}
 		rvr.Signature = getRequestVoteResponseSignature(_state.privateKey, &rvr)
 		_state.lock.Unlock()
 		return &rvr
-	} else if _state.currentTerm < (*rva).Term {
-		_state.updateCurrentTerm((*rva).Term)
 	}
 
 	// At this point we know that (*rva).Term == _state.currentTerm
@@ -386,17 +384,7 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse) bool {
 	}
 	log.Trace("Received RequestVoteRPC response: ", resp.Id, " ", resp.Term, " ", resp.VoteGranted)
 	// If the node's current state is stale immediately revert to Follower state
-	if (*resp).Term > (_state.currentTerm) {
-		_state.stopElectionTimeout()
-		_state.currentElectionVotes = 0
-		_state.updateCurrentTerm((*resp).Term)
-		log.Info("Become Follower (updateElection)")
-		// _state.acceptAppendEntries = false
-		_state.currentState = Follower
-		_state.lock.Unlock()
-		return false
-		// Only accept votes for the current term
-	} else if (*resp).Term == (_state.currentTerm) && (*resp).VoteGranted == true {
+	if (*resp).Term == (_state.currentTerm) && (*resp).VoteGranted == true {
 		_state.currentVotes[(*resp).Id] = *resp
 		_state.currentElectionVotes++
 
@@ -860,15 +848,6 @@ func (_state *stateImpl) handleAppendEntriesResponse(aer *AppendEntriesResponse)
 	}
 	if !(*aer).Success {
 		log.Debug("Unsuccessful AppendEntriesRPC: ", (*aer).Id)
-		if (*aer).Term > _state.currentTerm {
-			log.Info("Become Follower (handleAppendEntriesRepsonse)")
-			// _state.acceptAppendEntries = false
-			_state.currentState = Follower
-			_state.updateCurrentTerm((*aer).Term)
-			_state.currentLeader = (*aer).Id
-			_state.lock.Unlock()
-			return -1, false
-		}
 		var snapshot = false
 		if (*aer).LastIndex >= 0 {
 			_state.nextIndex[(*aer).Id] = (*aer).LastIndex
@@ -1040,13 +1019,6 @@ func (_state *stateImpl) handleInstallSnapshotResponse(isr *InstallSnapshotRespo
 		return -1
 	}
 	if !(*isr).Success {
-		if (*isr).Term >= _state.currentTerm {
-			log.Info("Become Follower (handleInstallSnapshotResponse)")
-			// _state.acceptAppendEntries = false
-			_state.currentState = Follower
-			_state.updateCurrentTerm((*isr).Term)
-			_state.currentLeader = (*isr).Id
-		}
 		_state.lock.Unlock()
 		return -1
 	}
@@ -1074,8 +1046,6 @@ func (_state *stateImpl) handleInstallSnapshotRequest(isa *InstallSnapshotArgs) 
 		isr.Signature = getInstallSnapshotResponseSignature(_state.privateKey, &isr)
 		_state.lock.Unlock()
 		return &isr
-	} else if (*isa).Term > _state.currentTerm {
-		_state.updateCurrentTerm((*isa).Term)
 	}
 
 	if (*isa).LastIncludedIndex <= _state.lastApplied {
@@ -1213,6 +1183,7 @@ func (_state *stateImpl) hasVoted() bool {
 }
 
 func (_state *stateImpl) sendPendingVotes() {
+	_state.updateCurrentTerm(_state.votedForTerm)
 	var rvr = RequestVoteResponse{_state.id, _state.currentTerm, true, []byte{}}
 	rvr.Signature = getRequestVoteResponseSignature(_state.privateKey, &rvr)
 	_state.votedForChan <- &rvr
