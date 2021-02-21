@@ -66,6 +66,11 @@ type snapshot struct {
 	hash                [32]byte
 }
 
+type appendEntriesSituationStruct struct {
+	lastIndex int
+	lastHash  [32]byte
+}
+
 type clientStateStruct struct {
 	lastActionApplied int64
 }
@@ -113,10 +118,11 @@ type stateImpl struct {
 	privateKey                  *rsa.PrivateKey
 	bannedServers               []ServerID
 	currentVotes                map[ServerID]RequestVoteResponse
-	appendEntriesSituation      map[ServerID]int
+	appendEntriesSituation      map[ServerID]appendEntriesSituationStruct
 	votedForTerm                int
 	votedForChan                chan *RequestVoteResponse
 	clientChanResponse          map[string]map[int64]chan bool
+	configurationReference      map[ServerID]bool
 }
 
 func raftLogToString(log RaftLog) string {
@@ -195,10 +201,11 @@ func newState(id string, otherServers []ServerID, snapshotRequestChan chan bool,
 		privateKey,
 		[]ServerID{},
 		make(map[ServerID]RequestVoteResponse),
-		make(map[ServerID]int),
+		make(map[ServerID]appendEntriesSituationStruct),
 		-1,
 		nil,
-		make(map[string]map[int64]chan bool)}
+		make(map[string]map[int64]chan bool),
+		make(map[ServerID]bool)}
 	return &state
 }
 
@@ -413,6 +420,10 @@ func (_state *stateImpl) winElection() {
 	_state.currentElectionVotes = 0
 	_state.currentState = Leader
 	_state.currentLeader = _state.id
+	_state.configurationReference = make(map[ServerID]bool)
+	for id, _ := range _state.serverConfiguration {
+		_state.configurationReference[id] = true
+	}
 	for id := range _state.nextIndex {
 		_state.nextIndex[id] = lastLogIdx + 1
 	}
@@ -423,6 +434,7 @@ func (_state *stateImpl) winElection() {
 }
 
 func (_state *stateImpl) prepareAppendEntriesArgs(lastLogIdx int, lastLogTerm int, lastLogHash [32]byte, logsToSend []RaftLog) *AppendEntriesArgs {
+	_state.lock.Lock()
 	var aea = AppendEntriesArgs{
 		_state.currentTerm,
 		_state.id,
@@ -432,8 +444,10 @@ func (_state *stateImpl) prepareAppendEntriesArgs(lastLogIdx int, lastLogTerm in
 		logsToSend,
 		_state.commitIndex,
 		_state.currentVotes,
+		_state.configurationReference,
 		[]byte{}}
 	aea.Signature = getAppendEntriesArgsSignature(_state.privateKey, &aea)
+	_state.lock.Unlock()
 	return &aea
 }
 
@@ -558,8 +572,8 @@ func (_state *stateImpl) addNewGameLog(msg GameLog) bool {
 	_state.lastSentLogIndex[_state.id] = newLog.Idx
 	_state.nextIndex[_state.id] = newLog.Idx + 1
 
-	if newLog.Idx > _state.appendEntriesSituation[_state.id] {
-		_state.appendEntriesSituation[_state.id] = newLog.Idx
+	if newLog.Idx > _state.appendEntriesSituation[_state.id].lastIndex {
+		_state.appendEntriesSituation[_state.id] = appendEntriesSituationStruct{newLog.Idx, _state.logHashes[_state.nextLogArrayIdx-1]}
 	}
 	_state.lock.Unlock()
 	return true
@@ -601,8 +615,8 @@ func (_state *stateImpl) addNewConfigurationLog(conf ConfigurationLog) bool {
 	_state.lastSentLogIndex[_state.id] = newLog.Idx
 	_state.nextIndex[_state.id] = newLog.Idx + 1
 
-	if newLog.Idx > _state.appendEntriesSituation[_state.id] {
-		_state.appendEntriesSituation[_state.id] = newLog.Idx
+	if newLog.Idx > _state.appendEntriesSituation[_state.id].lastIndex {
+		_state.appendEntriesSituation[_state.id] = appendEntriesSituationStruct{newLog.Idx, _state.logHashes[_state.nextLogArrayIdx-1]}
 	}
 	return true
 }
@@ -621,8 +635,8 @@ func (_state *stateImpl) addNewNoopLog() {
 	_state.lastSentLogIndex[_state.id] = newLog.Idx
 	_state.nextIndex[_state.id] = newLog.Idx + 1
 
-	if newLog.Idx > _state.appendEntriesSituation[_state.id] {
-		_state.appendEntriesSituation[_state.id] = newLog.Idx
+	if newLog.Idx > _state.appendEntriesSituation[_state.id].lastIndex {
+		_state.appendEntriesSituation[_state.id] = appendEntriesSituationStruct{newLog.Idx, _state.logHashes[_state.nextLogArrayIdx-1]}
 	}
 }
 
@@ -639,17 +653,13 @@ func (_state *stateImpl) verifyAppendEntriesQuorum(aea *AppendEntriesArgs) bool 
 		}
 	}
 
-	log.Info("Verify append entries quorum ", votes, "/", len(_state.serverConfiguration))
-	// NB: the Candidate doesn't actually produce a vote for itself so we should assume it
-	return votes+1 > len(_state.serverConfiguration)/2
+	log.Info("Verify append entries quorum (", (*aea).LeaderID, "): ", votes, "/", len((*aea).ConfigurationReference))
+	return votes > len((*aea).ConfigurationReference)/2
 }
 
-func (_state *stateImpl) updateQuorum(sid ServerID, aea *AppendEntriesArgs) {
-	if len((*aea).Entries) > 0 {
-		var lastLog = (*aea).Entries[len((*aea).Entries)-1]
-		if lastLog.Idx > _state.appendEntriesSituation[sid] {
-			_state.appendEntriesSituation[sid] = lastLog.Idx
-		}
+func (_state *stateImpl) updateQuorum(sid ServerID, lastLogIdx int, lastLogHash [32]byte) {
+	if lastLogIdx > _state.appendEntriesSituation[sid].lastIndex {
+		_state.appendEntriesSituation[sid] = appendEntriesSituationStruct{lastLogIdx, lastLogHash}
 	}
 }
 
@@ -721,9 +731,9 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEnt
 
 	var prevLogIdx = -1
 	var found = false
-	if (*aea).PrevLogHash != [32]byte{} {
+	if (*aea).PrevLogIndex >= 0 {
 		// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
-		found, prevLogIdx = _state.findArrayIndexByHash((*aea).PrevLogHash)
+		found, prevLogIdx = _state.findArrayIndexByLogIndex((*aea).PrevLogIndex)
 		if !found {
 			// If we didn't find the previous log index it may be included in the last snapshot
 			// so we check if there exists a last snapshot and if it includes the previous log index
@@ -735,15 +745,36 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEnt
 				return &aer, true
 			}
 		} else {
-			if _state.logs[prevLogIdx].Term != (*aea).PrevLogTerm {
+			var prevLogHash = _state.logHashes[prevLogIdx]
+			if prevLogHash != (*aea).PrevLogHash {
 				var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, [32]byte{}, []byte{}}
 				aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
 				_state.lock.Unlock()
-				log.Trace("Refuse AERPC log term not in snapshot")
+				log.Trace("Refuse AERPC umatching hashes")
 				return &aer, true
 			}
 		}
 	}
+
+	/*
+		var prevLogIdx = -1
+		var found = false
+		if (*aea).PrevLogHash != [32]byte{} {
+			// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
+			found, prevLogIdx = _state.findArrayIndexByHash((*aea).PrevLogHash)
+			if !found {
+				// If we didn't find the previous log index it may be included in the last snapshot
+				// so we check if there exists a last snapshot and if it includes the previous log index
+				if _state.lastSnapshot == nil || (*_state.lastSnapshot).lastIncludedIndex < (*aea).PrevLogIndex {
+					var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, [32]byte{}, []byte{}}
+					aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
+					_state.lock.Unlock()
+					log.Trace("Refuse AERPC log index not in snapshot")
+					return &aer, true
+				}
+			}
+		}
+	*/
 
 	// At this point we can say that if the append entries request is empty
 	// then it is an heartbeat an so we can keep _state.currentLeader updated
@@ -813,10 +844,13 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEnt
 		}
 	}
 
-	_state.updateQuorum(_state.id, aea)
-	_state.updateQuorum((*aea).LeaderID, aea)
 	var lastAddedLogIdx, _ = _state.getLastLogIdxTerm()
 	_, lastLogHash := _state.getLogHashFromIdx(lastAddedLogIdx)
+	if len((*aea).Entries) > 0 {
+		_state.updateQuorum(_state.id, lastAddedLogIdx, lastLogHash)
+		_state.updateQuorum((*aea).LeaderID, lastAddedLogIdx, lastLogHash)
+	}
+
 	var aer = AppendEntriesResponse{_state.id, _state.currentTerm, true, lastAddedLogIdx, lastLogHash, []byte{}}
 	aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
 	_state.lock.Unlock()
@@ -855,8 +889,9 @@ func (_state *stateImpl) handleAppendEntriesResponse(aer *AppendEntriesResponse)
 	}
 	_state.nextIndex[(*aer).Id] = _state.lastSentLogIndex[(*aer).Id] + 1
 	_state.matchIndex[(*aer).Id] = _state.lastSentLogIndex[(*aer).Id]
-	if _state.lastSentLogIndex[(*aer).Id] > _state.appendEntriesSituation[(*aer).Id] {
-		_state.appendEntriesSituation[(*aer).Id] = _state.lastSentLogIndex[(*aer).Id]
+	if _state.lastSentLogIndex[(*aer).Id] > _state.appendEntriesSituation[(*aer).Id].lastIndex {
+		_, lastSentLogHash := _state.getLogHashFromIdx(_state.lastSentLogIndex[(*aer).Id])
+		_state.appendEntriesSituation[(*aer).Id] = appendEntriesSituationStruct{_state.lastSentLogIndex[(*aer).Id], lastSentLogHash}
 	}
 	var matchIndex = _state.matchIndex[(*aer).Id]
 	_state.lock.Unlock()
@@ -926,7 +961,7 @@ func (_state *stateImpl) addNewServer(sid ServerID) {
 		_state.lastSentLogIndex[sid] = 0
 		_state.nextIndex[sid] = 0
 		_state.matchIndex[sid] = 0
-		_state.appendEntriesSituation[sid] = -1
+		_state.appendEntriesSituation[sid] = appendEntriesSituationStruct{-1, [32]byte{}}
 	}
 	_state.lock.Unlock()
 }
@@ -1099,27 +1134,47 @@ func (_state *stateImpl) updateClientLastActionApplied(sid ServerID, idx int64) 
 	_state.lock.Unlock()
 }
 
-func findQuorum(values map[ServerID]int) int {
+func (_state *stateImpl) checkLogHash(idx int, hash [32]byte) bool {
+	found, myHash := _state.getLogHashFromIdx(idx)
+	if found && myHash == hash {
+		return true
+	}
+	return false
+}
+
+func (_state *stateImpl) findQuorum() int {
 	votes := make(map[int]int)
-	for _, val := range values {
-		if _, found := votes[val]; !found {
-			votes[val] = 1
-		} else {
-			votes[val]++
+	for _, val := range _state.appendEntriesSituation {
+		if _, found := votes[val.lastIndex]; !found && _state.checkLogHash(val.lastIndex, val.lastHash) {
+			votes[val.lastIndex] = 1
+			for i, _ := range votes {
+				if val.lastIndex > i {
+					votes[i]++
+				}
+			}
+		} else if _state.checkLogHash(val.lastIndex, val.lastHash) {
+			votes[val.lastIndex]++
+			for i, _ := range votes {
+				if val.lastIndex > i {
+					votes[i]++
+				}
+			}
 		}
 	}
 	var result = -1
 	for idx, val := range votes {
-		if val > len(values)/2 && idx > result {
+		if val > len(_state.appendEntriesSituation)/2 && idx > result {
 			result = idx
 		}
 	}
+	log.Debug("Find quorum: ", result, " ", votes)
+	log.Debug(_state.appendEntriesSituation)
 	return result
 }
 
 func (_state *stateImpl) updateCommitIndex() {
 	_state.lock.Lock()
-	var quorum = findQuorum(_state.appendEntriesSituation)
+	var quorum = _state.findQuorum()
 	if quorum >= 0 && quorum > _state.commitIndex {
 		_state.commitIndex = quorum
 	}
@@ -1136,9 +1191,8 @@ func (_state *stateImpl) updateAppendEntriesResponseSituation(aer *AppendEntries
 		return
 	}
 
-	found, hash := _state.getLogHashFromIdx((*aer).LastIndex)
-	if found && hash == (*aer).LastHash && (*aer).LastIndex > _state.appendEntriesSituation[(*aer).Id] {
-		_state.appendEntriesSituation[(*aer).Id] = (*aer).LastIndex
+	if (*aer).LastIndex > _state.appendEntriesSituation[(*aer).Id].lastIndex {
+		_state.appendEntriesSituation[(*aer).Id] = appendEntriesSituationStruct{(*aer).LastIndex, (*aer).LastHash}
 	}
 
 	_state.lock.Unlock()

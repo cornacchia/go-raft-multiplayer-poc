@@ -264,22 +264,26 @@ func testNodesNormal(testMode string, pkgToTest string, number int, testTime int
 	log.Debug("###################################")
 	log.Debug("##### Normal test for ", number, " nodes, ")
 
-	var nodesToTest = map[int][]string{
-		1: {"6667", "6666"},
-		2: {"6668", "6666"},
-		3: {"6669", "6666"},
-		4: {"6670", "6666"},
+	var nodesNames = []string{}
+	for i := 0; i < number; i++ {
+		nodesNames = append(nodesNames, fmt.Sprint(6666+i))
 	}
 
-	for i := 5; i < number; i++ {
-		// nodesToTest[i] = []string{fmt.Sprint(6666 + i), fmt.Sprint(6666 + (i % 5))}
-		nodesToTest[i] = []string{fmt.Sprint(6666 + i), "6666"}
+	var nodesToTest = map[int][]string{}
+
+	for i := 0; i < number; i++ {
+		var thisName = nodesNames[i]
+		var thisArgs = []string{thisName}
+		for _, val := range nodesNames {
+			if val != thisName {
+				thisArgs = append(thisArgs, val)
+			}
+		}
+		nodesToTest[i] = thisArgs
 	}
 
-	go newCommand(pkgToTest, "Bot", []string{"6666"}, 0, "Append")
-	time.Sleep(time.Millisecond * 1000)
 	for i, nodes := range nodesToTest {
-		go newCommand(pkgToTest, "Bot", nodes, i, "Append")
+		go newCommand(pkgToTest, "Bot", nodes, i, "Full")
 		time.Sleep(time.Millisecond * 1000)
 	}
 
@@ -450,7 +454,7 @@ func testPackage(testMode string, pkgToTest string, start int, stop int, step in
 }
 
 func main() {
-	log.SetLevel(log.InfoLevel)
+	log.SetLevel(log.DebugLevel)
 	args := os.Args
 	if len(args) < 8 {
 		log.Fatal("Usage: go_test <dynamic | faulty | normal> <go_skeletons | go_wanderer | both> <repetitions> <test time> <start> <finish> <step> <result_file>")

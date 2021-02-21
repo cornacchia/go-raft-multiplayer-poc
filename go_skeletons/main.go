@@ -63,7 +63,7 @@ func checkActionQuorum(opt *options, id int64) bool {
 	(*opt).requestNumberOfServersChan <- true
 	nOfServers := <-(*opt).getNumberOfServersChan
 	log.Trace("Action quorum: ", currentValue.(int)+1, "/", nOfServers)
-	if currentValue.(int)+1 > nOfServers/2 {
+	if currentValue.(int)+1 > ((nOfServers-1)/3 + 1) {
 		(*opt).actionQuorum.LoadAndDelete(id)
 		return true
 	}
@@ -224,7 +224,7 @@ func broadcastAction(opt *options, actionArgs *raft.ActionArgs, timestamp int64,
 				} else {
 					chanResponse <- true
 				}
-			case <-time.After(time.Millisecond * 500):
+			case <-time.After(time.Millisecond * 1000):
 				chanResponse <- false
 			}
 		}(opt, actionCall, &actionResponse, (*actionArgs).ActionId, id)
@@ -418,7 +418,7 @@ func main() {
 	// Seed random number generator
 	rand.Seed(time.Now().UnixNano())
 
-	log.SetLevel(log.TraceLevel)
+	log.SetLevel(log.InfoLevel)
 	customFormatter := new(log.TextFormatter)
 	customFormatter.TimestampFormat = "2006-01-02 15:04:05.000000"
 	log.SetFormatter(customFormatter)

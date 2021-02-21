@@ -63,7 +63,7 @@ func checkActionQuorum(opt *options, id int64) bool {
 	(*opt).requestNumberOfServersChan <- true
 	nOfServers := <-(*opt).getNumberOfServersChan
 	log.Trace("Action quorum: ", currentValue.(int)+1, "/", nOfServers)
-	if currentValue.(int)+1 > nOfServers/2 {
+	if currentValue.(int)+1 > ((nOfServers-1)/3 + 1) {
 		(*opt).actionQuorum.LoadAndDelete(id)
 		return true
 	}
