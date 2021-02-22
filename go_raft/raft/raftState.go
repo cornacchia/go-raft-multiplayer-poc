@@ -487,7 +487,6 @@ func (_state *stateImpl) addNewConfigurationLog(conf ConfigurationLog) bool {
 		_state.takeSnapshot()
 	}
 	if _state.nextLogArrayIdx >= logArrayCapacity {
-		_state.lock.Unlock()
 		return false
 	}
 	_state.logs[_state.nextLogArrayIdx] = newLog
