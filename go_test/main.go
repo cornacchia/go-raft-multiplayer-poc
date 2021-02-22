@@ -37,10 +37,10 @@ type results struct {
 
 var openCmds = [1024]*exec.Cmd{}
 
-func newCommand(pkgToTest string, mode string, ports []string, idx int) {
+func newCommand(pkgToTest string, mode string, ports []string, idx int, connectMode string) {
 	var cmd *exec.Cmd
 	var cmdString = "./" + pkgToTest
-	var args = []string{"Test", mode, "Append"}
+	var args = []string{"Test", mode, connectMode}
 	cmd = exec.Command(cmdString, append(args, ports...)...)
 	cmd.Dir = "../" + pkgToTest
 	cmd.Stderr = os.Stderr
@@ -228,15 +228,15 @@ func testNodesNormal(testMode string, pkgToTest string, number int, testTime int
 		clientsToTest[i] = []string{fmt.Sprint(6666 + i + 5), "6666", "6667", "6668", "6669", "6670"}
 	}
 
-	go newCommand(pkgToTest, "Node", []string{"6666"}, 0)
+	go newCommand(pkgToTest, "Node", []string{"6666"}, 0, "Append")
 	time.Sleep(time.Millisecond * 1000)
 	for i, nodes := range nodesToTest {
-		go newCommand(pkgToTest, "Node", nodes, i)
+		go newCommand(pkgToTest, "Node", nodes, i, "Append")
 		time.Sleep(time.Millisecond * 1000)
 	}
 
 	for i, nodes := range clientsToTest {
-		go newCommand(pkgToTest, "Bot", nodes, i+5)
+		go newCommand(pkgToTest, "Bot", nodes, i+5, "Append")
 		time.Sleep(time.Millisecond * 1000)
 	}
 
@@ -287,7 +287,7 @@ func killWorkers(pkgToTest string, signal syscall.Signal, killInterval int, retC
 			killProcess(currentWorkerIdx, signal)
 			time.Sleep(time.Second * 10)
 			var val, _ = nodesToTest[currentWorkerIdx]
-			go newCommand(pkgToTest, "Node", val, currentWorkerIdx)
+			go newCommand(pkgToTest, "Node", val, currentWorkerIdx, "Append")
 			currentWorkerIdx = (currentWorkerIdx + 1) % len(nodesToTest)
 		}
 	}
@@ -304,10 +304,11 @@ func testNodesDynamic(testMode string, killInterval int, testTime int, pkgToTest
 	}
 
 	var nodesToTest = map[int][]string{
-		1: {"6667", "6666", "6668"},
-		2: {"6668", "6666", "6669"},
-		3: {"6669", "6666", "6670"},
-		4: {"6670", "6666", "6667"},
+		0: {"6666", "6667", "6668", "6669", "6670"},
+		1: {"6667", "6666", "6668", "6669", "6670"},
+		2: {"6668", "6666", "6667", "6669", "6670"},
+		3: {"6669", "6666", "6667", "6668", "6670"},
+		4: {"6670", "6666", "6667", "6668", "6669"},
 	}
 
 	var clientsToTest = map[int][]string{
@@ -318,17 +319,14 @@ func testNodesDynamic(testMode string, killInterval int, testTime int, pkgToTest
 		9: {"6675", "6666", "6667", "6668", "6669", "6670"},
 	}
 
-	go newCommand(pkgToTest, "Node", []string{"6666"}, 0)
-	time.Sleep(time.Millisecond * 1000)
 	for i, nodes := range nodesToTest {
-		go newCommand(pkgToTest, "Node", nodes, i)
-		time.Sleep(time.Millisecond * 1000)
+		go newCommand(pkgToTest, "Node", nodes, i, "Full")
+		time.Sleep(time.Millisecond * 10)
 	}
-	nodesToTest[0] = []string{"6666", "6667", "6668"}
 
 	for i, nodes := range clientsToTest {
-		go newCommand(pkgToTest, "Bot", nodes, i+5)
-		time.Sleep(time.Millisecond * 1000)
+		go newCommand(pkgToTest, "Bot", nodes, i+5, "Append")
+		time.Sleep(time.Millisecond * 10)
 	}
 
 	waitRetChan := make(chan bool)
