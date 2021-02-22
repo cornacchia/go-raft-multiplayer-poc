@@ -224,8 +224,8 @@ func testNodesNormal(testMode string, pkgToTest string, number int, testTime int
 
 	var clientsToTest = map[int][]string{}
 
-	for i := 5; i < number; i++ {
-		clientsToTest[i-5] = []string{fmt.Sprint(6666 + i), "6666", "6667", "6668", "6669", "6670"}
+	for i := 0; i <= number; i++ {
+		clientsToTest[i] = []string{fmt.Sprint(6666 + i + 5), "6666", "6667", "6668", "6669", "6670"}
 	}
 
 	go newCommand(pkgToTest, "Node", []string{"6666"}, 0)
@@ -246,7 +246,7 @@ func testNodesNormal(testMode string, pkgToTest string, number int, testTime int
 
 	killAll(pkgToTest)
 
-	retChan <- elaborateResults(0, 5, number, pkgToTest, testTime, testMode)
+	retChan <- elaborateResults(0, 5, len(nodesToTest)+len(clientsToTest), pkgToTest, testTime, testMode)
 }
 
 func testNormal(testMode string, start int, stop int, step int, testTime int, repetitions int, pkgToTest string, resultFile string) {
