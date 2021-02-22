@@ -81,7 +81,7 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, changeC
 				changeConnectionChan <- (*response).LeaderID
 			} else {
 				(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, (*opt).connections}
-				changeConnectionChan <- (*opt).id
+				changeConnectionChan <- ""
 			}
 			if msg.Type != "NOOP" {
 				actionDoneChannel <- false
@@ -333,8 +333,8 @@ func main() {
 	go raft.ConnectionManager(nil, requestConnectionChan)
 	go manageActions(&opt)
 
-	if len(otherServers) > 0 {
-		if connectionMode == "Append" {
+	if nodeMode == "Node" {
+		if len(otherServers) > 0 && connectionMode == "Append" {
 			uiConfChan <- true
 			// Wait for the node to be fully connected
 			<-mainConnectedChan
