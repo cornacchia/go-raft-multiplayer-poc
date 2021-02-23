@@ -104,6 +104,9 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, changeC
 			log.Info("Main - Action dropped - ", currentConnection, " - ", msg.ActionId)
 		}
 		changeConnectionChan <- ""
+		if msg.Type != "NOOP" {
+			actionDoneChannel <- false
+		}
 	}
 }
 
@@ -162,6 +165,7 @@ func manageActions(opt *options) {
 					(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, (*opt).connections}
 					(*opt).requestNewServerIDChan <- true
 					currentConnection = <-(*opt).getNewServerIDChan
+					log.Debug("Change currentConnection (msgNOOP): ", currentConnection)
 				} else {
 					var raftConn = conn.(raft.RaftConnection)
 					actionCall := raftConn.Connection.Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
@@ -183,6 +187,7 @@ func manageActions(opt *options) {
 				go handleConfigurationResponse(nil, nil, changeConnectionChan, msg, currentConnection, opt)
 				(*opt).requestNewServerIDChan <- true
 				currentConnection = <-(*opt).getNewServerIDChan
+				log.Trace("Change currentConnection (confChan): ", currentConnection)
 			} else {
 				log.Info("Main - Send connection request to ", currentConnection)
 				var raftConn = conn.(raft.RaftConnection)
@@ -196,7 +201,7 @@ func manageActions(opt *options) {
 			} else {
 				currentConnection = newServerID
 			}
-
+			log.Trace("Change currentConnection (currConnChan): ", currentConnection)
 			var _, found = (*(*opt).connections).Load(currentConnection)
 			if !found {
 				(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, (*opt).connections}
@@ -223,7 +228,10 @@ func manageActions(opt *options) {
 					(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, (*opt).connections}
 					(*opt).requestNewServerIDChan <- true
 					currentConnection = <-(*opt).getNewServerIDChan
+					log.Trace("Change currentConnection (clearToSend): ", currentConnection)
+					clearToSend = true
 				} else {
+					log.Trace("Main - start sending: ", msg.ActionId, " to ", currentConnection)
 					var raftConn = conn.(raft.RaftConnection)
 					actionCall := raftConn.Connection.Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
 					go handleActionResponse(actionCall, &actionResponse, changeConnectionChan, msg, timestamp, currentConnection, opt, actionDoneChannel)

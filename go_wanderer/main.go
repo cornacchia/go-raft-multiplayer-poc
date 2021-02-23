@@ -118,6 +118,9 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, changeC
 			log.Info("Main - Action dropped - ", currentConnection, " - ", msg.ActionId)
 		}
 		changeConnectionChan <- ""
+		if msg.Type != "NOOP" {
+			actionDoneChannel <- false
+		}
 	}
 }
 
@@ -238,6 +241,7 @@ func manageActions(opt *options) {
 					(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, (*opt).connections}
 					(*opt).requestNewServerIDChan <- true
 					currentConnection = <-(*opt).getNewServerIDChan
+					clearToSend = true
 				} else {
 					var raftConn = conn.(raft.RaftConnection)
 					actionCall := raftConn.Connection.Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
