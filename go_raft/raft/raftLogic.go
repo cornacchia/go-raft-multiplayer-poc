@@ -422,14 +422,12 @@ func handleFollower(opt *options) {
 	case <-(*electionTimeoutTimer).C:
 		// Only start new elections if fully connected to the raft network
 		(*opt)._state.stopElectionTimeout()
-		if (*opt).mode == "Node" || (*opt).connected {
+		if (*opt).connected {
 			(*opt)._state.startElection()
 			// Issue requestvoterpc in parallel to other servers
 			if (*opt)._state.countConnections() > 1 {
 				var requestVoteArgs = (*opt)._state.prepareRequestVoteRPC()
 				sendRequestVoteRPCs(opt, requestVoteArgs)
-			} else {
-				(*opt)._state.winElection()
 			}
 		}
 	// Do nothing, just flush the channel
