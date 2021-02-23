@@ -68,6 +68,7 @@ type options struct {
 	connectedChan         chan bool
 	connected             bool
 	requestConnectionChan chan RequestConnection
+	otherServers          []ServerID
 }
 
 // Start function for server logic
@@ -94,7 +95,8 @@ func Start(mode string, port string, otherServers []ServerID, actionChan chan Ga
 		nil,
 		connectedChan,
 		len(otherServers) == 0,
-		make(chan RequestConnection)}
+		make(chan RequestConnection),
+		otherServers}
 	var raftListener = initRaftListener(newOptions)
 	startListeningServer(raftListener, port)
 	nodeConnections := ConnectToRaftServers(newOptions, newOptions._state.getID(), otherServers)
@@ -419,12 +421,14 @@ func handleFollower(opt *options) {
 		(*opt)._state.stopElectionTimeout()
 		if (*opt).connected {
 			(*opt)._state.startElection()
-			// Issue requestvoterpc in parallel to other servers
-			if (*opt)._state.countConnections() > 1 {
+
+			// If this node is stand-alone just win the election
+			if len((*opt).otherServers) == 0 {
+				(*opt)._state.winElection()
+			} else {
+				// Issue requestvoterpc in parallel to other servers
 				var requestVoteArgs = (*opt)._state.prepareRequestVoteRPC()
 				sendRequestVoteRPCs(opt, requestVoteArgs)
-			} else {
-				(*opt)._state.winElection()
 			}
 		}
 	// Do nothing, just flush the channel
