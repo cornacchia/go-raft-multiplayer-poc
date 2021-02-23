@@ -95,6 +95,7 @@ func handleActionResponse(call *rpc.Call, response *raft.ActionResponse, changeC
 			log.Info("Main - Action dropped - ", currentConnection, " - ", msg.ActionId)
 		}
 		changeConnectionChan <- ""
+		actionDoneChannel <- false
 	}
 }
 
@@ -144,7 +145,7 @@ func manageActions(opt *options) {
 	for {
 		select {
 		case msg := <-(*opt).actionChan:
-			if len(actions) < 256 {
+			if len(actions) < 32 {
 				actions = append(actions, msg)
 			} else {
 				log.Debug("Too many actions, drop one")
@@ -185,7 +186,7 @@ func manageActions(opt *options) {
 				copy(actions, actions[1:])
 				actions = actions[:len(actions)-1]
 			}
-		case <-time.After(time.Millisecond * 20):
+		case <-time.After(time.Millisecond * 10):
 			if clearToSend && len(actions) > 0 {
 				clearToSend = false
 				var msg = actions[0]
@@ -198,6 +199,7 @@ func manageActions(opt *options) {
 					(*opt).requestConnectionChan <- raft.RequestConnection{currentConnection, (*opt).connections}
 					(*opt).requestNewServerIDChan <- true
 					currentConnection = <-(*opt).getNewServerIDChan
+					clearToSend = true
 				} else {
 					var raftConn = conn.(raft.RaftConnection)
 					actionCall := raftConn.Connection.Go("RaftListener.ActionRPC", &actionArgs, &actionResponse, nil)
@@ -310,6 +312,8 @@ func main() {
 			<-mainConnectedChan
 		}
 		// Notify the raft node
+		nodeConnectedChan <- true
+	} else {
 		nodeConnectedChan <- true
 	}
 
