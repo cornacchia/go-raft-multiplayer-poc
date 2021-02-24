@@ -77,6 +77,7 @@ type options struct {
 	clientKeys               map[string]*rsa.PublicKey
 	nodeKeys                 map[ServerID]*rsa.PublicKey
 	mainConfChan             chan ConfigurationLog
+	otherServers             []ServerID
 }
 
 // Start function for server logic
@@ -109,7 +110,8 @@ func Start(mode string, port string, otherServers []ServerID, actionChan chan Ga
 		make(chan RequestConnection),
 		clientKeys,
 		nodeKeys,
-		mainConfChan}
+		mainConfChan,
+		otherServers}
 	var raftListener = initRaftListener(newOptions)
 	startListeningServer(raftListener, port)
 	nodeConnections := ConnectToRaftServers(newOptions, newOptions._state.getID(), otherServers)
@@ -475,7 +477,7 @@ func handleFollower(opt *options) {
 	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
 		var requestResponse = (*opt)._state.handleRequestToVote(reqVoteArgs)
 		if requestResponse != nil {
-			reqVoteArgs.respChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
+			reqVoteArgs.respChan <- requestResponse
 		}
 	// Receive a InstallSnapshotRPC
 	case installSnapshotArgs := <-(*opt).installSnapshotArgsChan:
@@ -488,14 +490,16 @@ func handleFollower(opt *options) {
 		if (*opt)._state.hasVoted() {
 			(*opt)._state.sendPendingVotes()
 		} else {
-			if (*opt).mode == "Node" || (*opt).connected {
+			if (*opt).connected {
 				(*opt)._state.startElection()
-				// Issue requestvoterpc in parallel to other servers
-				if (*opt)._state.countConnections() > 1 {
+
+				// If this node is stand-alone just win the election
+				if len((*opt).otherServers) == 0 {
+					(*opt)._state.winElection()
+				} else {
+					// Issue requestvoterpc in parallel to other servers
 					var requestVoteArgs = (*opt)._state.prepareRequestVoteRPC()
 					sendRequestVoteRPCs(opt, requestVoteArgs)
-				} else {
-					(*opt)._state.winElection()
 				}
 			}
 		}
@@ -531,7 +535,7 @@ func handleCandidate(opt *options) {
 		// If another candidate asks for a vote the logic doesn't change
 		var requestResponse = (*opt)._state.handleRequestToVote(reqVoteArgs)
 		if requestResponse != nil {
-			reqVoteArgs.respChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
+			reqVoteArgs.respChan <- requestResponse
 		}
 		// Receive a InstallSnapshotRPC
 	case installSnapshotArgs := <-(*opt).installSnapshotArgsChan:
