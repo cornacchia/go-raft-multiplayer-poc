@@ -216,22 +216,21 @@ func testNodesNormal(testMode string, pkgToTest string, number int, testTime int
 	log.Debug("##### Normal test for ", number, " nodes, ")
 
 	var nodesToTest = map[int][]string{
-		1: {"6667", "6666"},
-		2: {"6668", "6666"},
-		3: {"6669", "6666"},
-		4: {"6670", "6666"},
+		0: {"6666", "6667", "6668", "6669", "6670"},
+		1: {"6667", "6666", "6668", "6669", "6670"},
+		2: {"6668", "6666", "6667", "6669", "6670"},
+		3: {"6669", "6666", "6667", "6668", "6670"},
+		4: {"6670", "6666", "6667", "6668", "6669"},
 	}
 
 	var clientsToTest = map[int][]string{}
 
-	for i := 0; i <= number; i++ {
+	for i := 0; i < number; i++ {
 		clientsToTest[i] = []string{fmt.Sprint(6666 + i + 5), "6666", "6667", "6668", "6669", "6670"}
 	}
 
-	go newCommand(pkgToTest, "Node", []string{"6666"}, 0, "Append")
-	time.Sleep(time.Millisecond * 1000)
 	for i, nodes := range nodesToTest {
-		go newCommand(pkgToTest, "Node", nodes, i, "Append")
+		go newCommand(pkgToTest, "Node", nodes, i, "Full")
 		time.Sleep(time.Millisecond * 1000)
 	}
 
