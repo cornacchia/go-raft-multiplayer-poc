@@ -458,7 +458,7 @@ func testPackage(testMode string, pkgToTest string, start int, stop int, step in
 }
 
 func main() {
-	log.SetLevel(log.DebugLevel)
+	log.SetLevel(log.InfoLevel)
 	args := os.Args
 	if len(args) < 8 {
 		log.Fatal("Usage: go_test <dynamic | faulty | normal> <go_skeletons | go_wanderer | both> <repetitions> <test time> <start> <finish> <step> <result_file>")

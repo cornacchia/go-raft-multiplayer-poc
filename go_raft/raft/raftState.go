@@ -12,7 +12,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const maxElectionTimeout = 300
+const maxElectionTimeout = 600
 const minElectionTimeout = 150
 const logArrayCapacity = 1024
 
@@ -326,7 +326,6 @@ func (_state *stateImpl) updateCurrentTerm(newTerm int) {
 	_state.currentState = Follower
 	_state.currentTerm = newTerm
 	_state.votedFor = ""
-	_state.acceptAppendEntries = false
 }
 
 func (_state *stateImpl) handleRequestToVote(wrap requestVoteArgsWrapper) *RequestVoteResponse {
@@ -352,15 +351,27 @@ func (_state *stateImpl) handleRequestToVote(wrap requestVoteArgsWrapper) *Reque
 
 	// At this point we know that (*rva).Term == _state.currentTerm
 	if (_state.votedFor == "" || _state.votedFor == (*rva).CandidateID) && (*rva).LastLogTerm >= lastLogTerm && (*rva).LastLogIndex >= lastLogIdx {
-		log.Info("Cast lazy vote for: ", (*rva).CandidateID)
 		if _state.currentState == Leader {
 			_state.currentState = Follower
 		}
 		_state.votedFor = (*rva).CandidateID
 		_state.votedForTerm = (*rva).Term
-		_state.votedForChan = wrap.respChan
-		_state.lock.Unlock()
-		return nil
+		_state.votedForChan = nil
+		// If there is no current leader vote immediately
+		if _state.currentLeader == "" {
+			_state.updateCurrentTerm(_state.votedForTerm)
+			_state.acceptAppendEntries = false
+			log.Info("Immediately send vote to: ", (*rva).CandidateID, " for term ", _state.currentTerm)
+			var rvr = RequestVoteResponse{_state.id, _state.currentTerm, true, []byte{}}
+			rvr.Signature = getRequestVoteResponseSignature(_state.privateKey, &rvr)
+			_state.lock.Unlock()
+			return &rvr
+		} else {
+			log.Info("Cast lazy vote for: ", (*rva).CandidateID)
+			_state.votedForChan = wrap.respChan
+			_state.lock.Unlock()
+			return nil
+		}
 	}
 
 	log.Info("Already voted for: ", _state.votedFor, " or ", lastLogTerm, " > ", (*rva).LastLogTerm, " or ", lastLogIdx, " > ", (*rva).LastLogIndex)
@@ -382,14 +393,14 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse) bool {
 		_state.lock.Unlock()
 		return false
 	}
-	log.Trace("Received RequestVoteRPC response: ", resp.Id, " ", resp.Term, " ", resp.VoteGranted)
+	log.Debug("Received RequestVoteRPC response: ", resp.Id, " ", resp.Term, " ", resp.VoteGranted)
 	// If the node's current state is stale immediately revert to Follower state
 	if (*resp).Term == (_state.currentTerm) && (*resp).VoteGranted == true {
 		_state.currentVotes[(*resp).Id] = *resp
 		_state.currentElectionVotes++
 
-		log.Debug("Election votes: ", _state.currentElectionVotes, "/", ((len(_state.serverConfiguration)*2)+1)/3)
-		if _state.currentElectionVotes >= ((len(_state.serverConfiguration)*2)+1)/3 {
+		log.Debug("Election votes: ", _state.currentElectionVotes, "/", len(_state.serverConfiguration)/2)
+		if _state.currentElectionVotes >= len(_state.serverConfiguration)/2 {
 			_state.lock.Unlock()
 			_state.winElection()
 			return true
@@ -634,8 +645,8 @@ func (_state *stateImpl) verifyAppendEntriesQuorum(aea *AppendEntriesArgs) bool 
 		}
 	}
 
-	log.Info("Verify append entries quorum (", (*aea).LeaderID, "): ", votes, "/", ((len(_state.serverConfiguration)*2)+1)/3)
-	return votes >= ((len(_state.serverConfiguration)*2)+1)/3
+	log.Info("Verify append entries quorum (", (*aea).LeaderID, "): ", votes, "/", len(_state.serverConfiguration)/2)
+	return votes >= len(_state.serverConfiguration)/2
 }
 
 func (_state *stateImpl) updateQuorum(sid ServerID, lastLogIdx int, lastLogHash [32]byte) {
@@ -679,7 +690,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEnt
 		var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, [32]byte{}, []byte{}}
 		aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
 		_state.lock.Unlock()
-		log.Debug("Refuse AERPC term out of date")
+		log.Debug("Refuse AERPC term out of date: ", (*aea).Term, " < ", _state.currentTerm)
 		return &aer, true
 	}
 
@@ -696,11 +707,11 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) (*AppendEnt
 		var quorum = _state.verifyAppendEntriesQuorum(aea)
 		log.Info("AppendEntries quorum verified: ", quorum)
 		if quorum {
-			_state.acceptAppendEntries = true
 			// Immediately update term if out of date
 			if (*aea).Term > _state.currentTerm {
 				_state.updateCurrentTerm((*aea).Term)
 			}
+			_state.acceptAppendEntries = true
 		} else {
 			var aer = AppendEntriesResponse{_state.id, _state.currentTerm, false, lastLogIdx, [32]byte{}, []byte{}}
 			aer.Signature = getAppendEntriesResponseSignature(_state.privateKey, &aer)
@@ -846,6 +857,12 @@ func (_state *stateImpl) handleAppendEntriesResponse(aer *AppendEntriesResponse)
 		_state.lock.Unlock()
 		return -1, false
 	}
+
+	if (*aer).Term > _state.currentTerm {
+		_state.currentTerm = (*aer).Term
+		log.Debug("Leader: Update current term: ", _state.currentTerm)
+	}
+
 	if !(*aer).Success {
 		log.Debug("Unsuccessful AppendEntriesRPC: ", (*aer).Id)
 		var snapshot = false
@@ -1184,6 +1201,7 @@ func (_state *stateImpl) hasVoted() bool {
 
 func (_state *stateImpl) sendPendingVotes() {
 	_state.updateCurrentTerm(_state.votedForTerm)
+	_state.acceptAppendEntries = false
 	var rvr = RequestVoteResponse{_state.id, _state.currentTerm, true, []byte{}}
 	rvr.Signature = getRequestVoteResponseSignature(_state.privateKey, &rvr)
 	_state.votedForChan <- &rvr
