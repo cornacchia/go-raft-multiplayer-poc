@@ -536,7 +536,7 @@ func main() {
 
 	if nodeMode == "Client" {
 		ui.Start(playerID, stateReqChan, stateChan, uiActionChan, false)
-	} else if nodeMode == "Bot" {
+	} else if nodeMode == "Bot" || nodeMode == "Rogue2" {
 		ui.Start(playerID, stateReqChan, stateChan, uiActionChan, true)
 	}
 

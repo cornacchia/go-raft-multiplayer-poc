@@ -808,7 +808,7 @@ func run(opt *options) {
 		(*opt)._state.updateCommitIndex()
 		checkLogsToApply(opt)
 		checkConfigurationsToStart(opt)
-		if (*opt).mode == "Rogue2" && currentTurn > 100 {
+		if (*opt).mode == "Rogue2" && currentTurn > -1 {
 			(*opt)._state.startElection()
 			var requestVoteArgs = (*opt)._state.prepareRequestVoteRPC()
 			sendRequestVoteRPCs(opt, requestVoteArgs)
