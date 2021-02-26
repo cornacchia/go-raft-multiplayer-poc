@@ -28,6 +28,12 @@ In branch `server-cluster` Raft nodes and clients are always separated, to run a
 
 Both games are controlled with the standard WASD keys.
 
+### Running on branch byzantine-behavior
+
+Branch `byzantine-behavior` is an attempt to reproduce what is described in [this paper](https://www.scs.stanford.edu/14au-cs244b/labs/projects/copeland_zhong.pdf). It works mostly like the `main` branch, but nodes (and clients) should always be started with the `Full` option as this version is not properly adapted to configuration changes.
+Moreover nodes and clients need different public and private keys (i.e. a single process launched in `Game` mode will a pair of keys for both its node and client), these should be saved in `keys/clients` and `keys/nodes`. Public keys should be called `public_key_<node port>.pem`, private keys shoudl be called `key_<node port>.pem`.
+The `go_test` script will handle key creation itself.
+
 ## Rundown of command-line options
 
 The available options are the following:
