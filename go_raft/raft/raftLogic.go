@@ -35,7 +35,6 @@ type configurationAction struct {
 }
 
 type options struct {
-	mode   string
 	_state state
 	// This is used to receive AppendEntriesRPC arguments from other nodes (through the listener)
 	appendEntriesArgsChan chan *AppendEntriesArgs
@@ -72,9 +71,8 @@ type options struct {
 }
 
 // Start function for server logic
-func Start(mode string, port string, otherServers []ServerID, actionChan chan GameLog, connectedChan chan bool, snapshotRequestChan chan bool, snapshotResponseChan chan []byte, installSnapshotChan chan []byte) *sync.Map {
+func Start(port string, otherServers []ServerID, actionChan chan GameLog, connectedChan chan bool, snapshotRequestChan chan bool, snapshotResponseChan chan []byte, installSnapshotChan chan []byte) *sync.Map {
 	var newOptions = &options{
-		mode,
 		newState(port, otherServers, snapshotRequestChan, snapshotResponseChan, installSnapshotChan),
 		make(chan *AppendEntriesArgs),
 		make(chan *AppendEntriesResponse),

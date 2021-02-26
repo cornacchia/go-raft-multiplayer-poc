@@ -302,7 +302,7 @@ func main() {
 
 	stateReqChan, stateChan, actionChan = engine.Start(playerID, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan, currentTurnEngineChan)
 
-	var _ = raft.Start(nodeMode, port, otherServers, actionChan, nodeConnectedChan, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan)
+	var _ = raft.Start(port, otherServers, actionChan, nodeConnectedChan, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan)
 	var nodeConnections = raft.ConnectToRaftServers(nil, raft.ServerID(port), otherServers)
 
 	var opt = options{
