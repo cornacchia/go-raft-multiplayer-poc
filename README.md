@@ -20,9 +20,13 @@ The Raft core logic is in the module `go_raft` which is imported by the two game
 
 In branch `main` clients processes always run a Raft node as well, so to test a game with two players on localhost open two terminals from the `go_skeletons` folder and run `./go_skeletons Game Client Append 6666` in the first and `./go_skeletons Game Client Append 6667 6666` in the second.
 
+Both games are controlled with the standard WASD keys.
+
 ### Running on branch server-cluster
 
 In branch `server-cluster` Raft nodes and clients are always separated, to run a game with two players first a Raft cluster must be started e.g. with `./go_skeletons Game Node Full 6666 6667` and `./go_skeletons Game Node Full 6667 6666` and then clients can be attached to the network with `./go_skeletons Game Client 6668 6666 66667`, `./go_skeletons Game Client 6669 6666 66667`, and so on.
+
+Both games are controlled with the standard WASD keys.
 
 ## Rundown of command-line options
 
