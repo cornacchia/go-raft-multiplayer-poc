@@ -147,18 +147,12 @@ func newNoopRaftLog(idx int, term int) RaftLog {
 
 // NewState returns an empty state, only used once at the beginning
 func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, snapshotResponseChan chan []byte, installSnapshotChan chan []byte) *stateImpl {
-	var lastSentLogIndex = make(map[ServerID]int)
-	var nextIndex = make(map[ServerID]int)
-	var matchIndex = make(map[ServerID]int)
-	var clientState = make(map[ServerID]clientStateStruct)
-	var newServerResponseChan = make(map[ServerID]chan bool)
-	var lock = &sync.Mutex{}
 	var state = stateImpl{
 		ServerID(id),
 		false,
 		nil,
 		0,
-		lastSentLogIndex,
+		map[ServerID]int{},
 		"",
 		0,
 		"",
@@ -169,13 +163,13 @@ func newState(id string, otherStates []ServerID, snapshotRequestChan chan bool, 
 		Follower,
 		-1,
 		0,
-		nextIndex,
-		matchIndex,
+		map[ServerID]int{},
+		map[ServerID]int{},
 		map[ServerID]bool{ServerID(id): true},
 		map[ServerID]bool{ServerID(id): true},
-		clientState,
-		newServerResponseChan,
-		lock,
+		map[ServerID]clientStateStruct{},
+		map[ServerID]chan bool{},
+		&sync.Mutex{},
 		snapshotRequestChan,
 		snapshotResponseChan,
 		installSnapshotChan,
@@ -195,7 +189,6 @@ type state interface {
 	checkElectionTimeout() *time.Timer
 	stopElectionTimeout()
 	handleRequestToVote(*RequestVoteArgs) *RequestVoteResponse
-	getElectionTimer() *time.Timer
 	updateElection(*RequestVoteResponse) bool
 	winElection()
 	getAppendEntriesArgs(ServerID) *AppendEntriesArgs
@@ -211,9 +204,6 @@ type state interface {
 	getCommitIndex() int
 	addNewServer(ServerID)
 	removeServer(ServerID)
-	updateNewServerResponseChans(ServerID, chan bool)
-	removeNewServerResponseChan(ServerID)
-	getNewServerResponseChan(ServerID) chan bool
 	prepareInstallSnapshotRPC() *InstallSnapshotArgs
 	handleInstallSnapshotResponse(*InstallSnapshotResponse) int
 	handleInstallSnapshotRequest(*InstallSnapshotArgs) *InstallSnapshotResponse
@@ -223,7 +213,6 @@ type state interface {
 	handleNextConfigurationChange() (bool, configurationAction)
 	addNewUnvotingServer(configurationAction)
 	removeUnvotingServerAction(ServerID) configurationAction
-	countConnections() int
 	unlockNextConfiguration()
 	serverInConfiguration(ServerID) bool
 }
@@ -304,10 +293,6 @@ func (_state *stateImpl) handleRequestToVote(rva *RequestVoteArgs) *RequestVoteR
 	log.Trace("Already voted for: ", _state.votedFor, " or ", lastLogTerm, " > ", (*rva).LastLogTerm, " or ", lastLogIdx, " > ", (*rva).LastLogIndex)
 	_state.lock.Unlock()
 	return &RequestVoteResponse{_state.id, _state.currentTerm, false}
-}
-
-func (_state *stateImpl) getElectionTimer() *time.Timer {
-	return _state.electionTimer
 }
 
 func (_state *stateImpl) updateElection(resp *RequestVoteResponse) bool {
@@ -548,7 +533,7 @@ func (_state *stateImpl) handleAppendEntries(aea *AppendEntriesArgs) *AppendEntr
 
 	// At this point a Leader or Candidate should step down because the term is at least
 	// as up to date as their own (for Leaders this will be strictly greater)
-	if _state.currentState == Candidate {
+	if _state.currentState == Candidate || _state.currentState == Leader {
 		// If AppendEntries RPC received from new leader: convert to follower
 		_state.stopElectionTimeout()
 		log.Info("Become Follower (handleAppendEntries)")
@@ -750,22 +735,6 @@ func (_state *stateImpl) removeServer(sid ServerID) {
 	_state.lock.Unlock()
 }
 
-func (_state *stateImpl) updateNewServerResponseChans(id ServerID, channel chan bool) {
-	_state.lock.Lock()
-	_state.newServerResponseChan[id] = channel
-	_state.lock.Unlock()
-}
-
-func (_state *stateImpl) removeNewServerResponseChan(id ServerID) {
-	_state.lock.Lock()
-	delete(_state.newServerResponseChan, id)
-	_state.lock.Unlock()
-}
-
-func (_state *stateImpl) getNewServerResponseChan(id ServerID) chan bool {
-	return _state.newServerResponseChan[id]
-}
-
 func (_state *stateImpl) copyLogsToBeginningOfRecord(startLog int) {
 	var restartIdx = 0
 	for startLog+restartIdx < _state.nextLogArrayIdx {
@@ -927,13 +896,6 @@ func (_state *stateImpl) removeUnvotingServerAction(sid ServerID) configurationA
 	delete(_state.unvotingServers, sid)
 	_state.lock.Unlock()
 	return newAction
-}
-
-func (_state *stateImpl) countConnections() int {
-	_state.lock.Lock()
-	var result = len(_state.serverConfiguration)
-	_state.lock.Unlock()
-	return result
 }
 
 func (_state *stateImpl) unlockNextConfiguration() {

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"go_raft/raft"
 	"strconv"
+
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -175,6 +177,7 @@ func applyAction(state *GameState, playerID PlayerID, action ActionImpl, opt *en
 		(*state).Players[playerID] = PlayerState{newPosition, action.Turn}
 	case DISCONNECT:
 		// Remove player from game
+		log.Debug("Remove player from game: ", playerID)
 		delete((*state).Players, playerID)
 	}
 	changed := checkIfTurnChanged(opt, state)

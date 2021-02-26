@@ -317,7 +317,7 @@ func main() {
 
 	if nodeMode == "Node" {
 		stateChan, actionChan = engine.Start(playerID, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan)
-		var _ = raft.Start(nodeMode, port, otherServers, actionChan, stateChan, nodeConnectedChan, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan)
+		var _ = raft.Start(port, otherServers, actionChan, stateChan, nodeConnectedChan, snapshotRequestChan, snapshotResponseChan, snapshotInstallChan)
 	}
 	var nodeConnections = raft.ConnectToRaftServers(nil, raft.ServerID(port), otherServers)
 
@@ -348,6 +348,8 @@ func main() {
 			<-mainConnectedChan
 		}
 		// Notify the raft node
+		nodeConnectedChan <- true
+	} else {
 		nodeConnectedChan <- true
 	}
 
