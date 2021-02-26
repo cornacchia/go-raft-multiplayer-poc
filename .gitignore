@@ -4,6 +4,6 @@ go_skeletons/go_skeletons
 go_wanderer/go_wanderer
 go_test/results
 raft-analyzer/www
-keys/clients
-keys/nodes
+keys/clients/*
+keys/nodes/*
 final_results
