@@ -44,7 +44,8 @@ The available options are the following:
 
 The directory `raft-analyzer` contains a simple nodejs server built with [sails](https://sailsjs.com/) and can be used to analyze and graphically follow traces of Raft communication (generated in test mode).
 
-It was tested with nodejs version 14.15.4.
+* It was tested with nodejs version 14.15.4.
+* It requires a mongodb database, it will use `mongodb://localhost:27017/` by default but can be configured in `raft-analyzer/config/datastores.js`
 
 To start it `cd` to the raft-analyzer directory, run `npm install`, then `npm start` and the interface will be up on `http://localhost:1337`.
 
