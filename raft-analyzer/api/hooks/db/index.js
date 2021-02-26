@@ -235,11 +235,13 @@ async function loadLogFile(file, collection, nodeId) {
     if (_.keys(newLog).length > 3) newLogs.push(newLog)
   })
 
-  try {
-    await sails.getDatastore().manager.collection(collection).insertMany(newLogs)
-  } catch (err) {
-    error = "Error inserting new logs into collection " + collection
-    sails.log.error(error, err)
+  if (newLogs.length > 0) {
+    try {
+      await sails.getDatastore().manager.collection(collection).insertMany(newLogs)
+    } catch (err) {
+      error = "Error inserting new logs into collection " + collection
+      sails.log.error(error, err)
+    }
   }
 }
 
