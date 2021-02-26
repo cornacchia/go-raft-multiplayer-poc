@@ -9,12 +9,17 @@ This repository holds an implementation of the [Raft consensus algorithm](https:
 
 ## Usage
 
-The Raft core logic is in the module `go_raft` which is imported by the two games. To build the games:
+This code was built and tested with go version `go1.16 linux/amd64` (on Arch linux) and with `go1.15.8 linux/amd64` (on Ubuntu 18.04.5 LTS).
 
-* `$ cd go_skeletons`
-* `$ go build`
-* `$ cd ../go_wanderer`
-* `$ go build`
+To build the games:
+* This repository should be cloned inside a `src` folder included in `GOPATH`, e.g:
+  * `mkdir /home/user/projects/go`
+  * `git clone https://github.com/cornacchia/go-raft-multiplayer-poc /home/user/projects/go/src`
+  * `export GOPATH=$(go env GOPATH):/home/user/projects/go/`
+* `cd /home/user/projects/go/src/go_skeletons`
+* `go get./...`, and then `go build`
+* `cd ../go_wanderer`
+* `go build`
 
 ### Running on branch main
 
