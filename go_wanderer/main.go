@@ -363,8 +363,6 @@ func main() {
 		}
 		// Notify the raft node
 		nodeConnectedChan <- true
-	} else {
-		nodeConnectedChan <- true
 	}
 
 	if nodeMode == "Client" {
