@@ -418,6 +418,16 @@ func handleAppendEntriesRPCResponses(opt *options) {
 	}
 }
 
+func handleRequestVoteRPCs(opt *options) {
+	for {
+		reqVoteArgs := <-(*opt).requestVoteArgsChan
+		var requestResponse = (*opt)._state.handleRequestToVote(reqVoteArgs)
+		if requestResponse != nil {
+			reqVoteArgs.respChan <- requestResponse
+		}
+	}
+}
+
 func handleInstallSnapshotResponses(opt *options) {
 	for {
 		installSnapshotResponse := <-(*opt).myInstallSnapshotResponseChan
@@ -479,12 +489,6 @@ func handleFollower(opt *options) {
 				broadcastAppendEntriesResponse(opt, response)
 			}
 		}
-		// Receive a RequestVoteRPC
-	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
-		var requestResponse = (*opt)._state.handleRequestToVote(reqVoteArgs)
-		if requestResponse != nil {
-			reqVoteArgs.respChan <- requestResponse
-		}
 	// Receive a InstallSnapshotRPC
 	case installSnapshotArgs := <-(*opt).installSnapshotArgsChan:
 		installSnapshot(opt, installSnapshotArgs)
@@ -535,13 +539,6 @@ func handleCandidate(opt *options) {
 			if len(appEntrArgs.Entries) > 0 {
 				broadcastAppendEntriesResponse(opt, response)
 			}
-		}
-	// Receive a RequestVoteRPC
-	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
-		// If another candidate asks for a vote the logic doesn't change
-		var requestResponse = (*opt)._state.handleRequestToVote(reqVoteArgs)
-		if requestResponse != nil {
-			reqVoteArgs.respChan <- requestResponse
 		}
 		// Receive a InstallSnapshotRPC
 	case installSnapshotArgs := <-(*opt).installSnapshotArgsChan:
@@ -733,12 +730,6 @@ func handleLeader(opt *options) {
 		if len(appEntrArgs.Entries) > 0 {
 			broadcastAppendEntriesResponse(opt, response)
 		}
-	// Receive a RequestVoteRPC
-	case reqVoteArgs := <-(*opt).requestVoteArgsChan:
-		var requestResponse = (*opt)._state.handleRequestToVote(reqVoteArgs)
-		if requestResponse != nil {
-			reqVoteArgs.respChan <- (*opt)._state.handleRequestToVote(reqVoteArgs)
-		}
 	// Receive a response to a (previously) issued RequestVoteRPC
 	// Do nothing, just flush the channel
 	case <-(*opt).myRequestVoteResponseChan:
@@ -803,12 +794,13 @@ func run(opt *options) {
 	go handleOtherAppendEntriesResponse(opt)
 	go handleUpdateLeaderMessages(opt)
 	go handleConfigurationMessages(opt)
+	go handleRequestVoteRPCs(opt)
 	for {
 		// First check if there are logs to apply to the state machine
 		(*opt)._state.updateCommitIndex()
 		checkLogsToApply(opt)
 		checkConfigurationsToStart(opt)
-		if (*opt).mode == "Rogue2" && currentTurn > -1 {
+		if (*opt).mode == "Rogue2" && currentTurn > 50 {
 			(*opt)._state.startElection()
 			var requestVoteArgs = (*opt)._state.prepareRequestVoteRPC()
 			sendRequestVoteRPCs(opt, requestVoteArgs)

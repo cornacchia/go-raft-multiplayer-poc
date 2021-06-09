@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"sync"
 	"time"
+	"math"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -385,6 +386,10 @@ func (_state *stateImpl) getElectionTimer() *time.Timer {
 	return _state.electionTimer
 }
 
+func (_state *stateImpl) getQuorum() int {
+	return int(math.Ceil(float64(2 * len(_state.serverConfiguration) + 1) / 3.0))
+}
+
 func (_state *stateImpl) updateElection(resp *RequestVoteResponse) bool {
 	_state.lock.Lock()
 	var hashed = getRequestVoteResponseBytes(resp)
@@ -399,8 +404,8 @@ func (_state *stateImpl) updateElection(resp *RequestVoteResponse) bool {
 		_state.currentVotes[(*resp).Id] = *resp
 		_state.currentElectionVotes++
 
-		log.Debug("Election votes: ", _state.currentElectionVotes, "/", len(_state.serverConfiguration)/2)
-		if _state.currentElectionVotes >= len(_state.serverConfiguration)/2 {
+		log.Debug("Election votes: ", _state.currentElectionVotes, "/", _state.getQuorum())
+		if _state.currentElectionVotes >= _state.getQuorum() {
 			_state.lock.Unlock()
 			_state.winElection()
 			return true
@@ -645,8 +650,8 @@ func (_state *stateImpl) verifyAppendEntriesQuorum(aea *AppendEntriesArgs) bool 
 		}
 	}
 
-	log.Info("Verify append entries quorum (", (*aea).LeaderID, "): ", votes, "/", len(_state.serverConfiguration)/2)
-	return votes >= len(_state.serverConfiguration)/2
+	log.Info("Verify append entries quorum (", (*aea).LeaderID, "): ", votes, "/", _state.getQuorum())
+	return votes >= _state.getQuorum()
 }
 
 func (_state *stateImpl) updateQuorum(sid ServerID, lastLogIdx int, lastLogHash [32]byte) {
@@ -925,7 +930,7 @@ func (_state *stateImpl) checkCommits() {
 				replicatedFollowers++
 			}
 		}
-		if replicatedFollowers > len(_state.serverConfiguration)/2 {
+		if replicatedFollowers >= _state.getQuorum() {
 			if _state.logs[i].Term == _state.currentTerm {
 				_state.commitIndex = _state.logs[i].Idx
 			}
@@ -1142,12 +1147,12 @@ func (_state *stateImpl) findQuorum() int {
 
 	var result = -1
 	for idx, val := range votes {
-		if val >= ((len(_state.serverConfiguration)*2)+1)/3 && idx > result {
+		if val >= _state.getQuorum() && idx > result {
 			result = idx
 		}
 	}
 
-	log.Debug("Find quorum: ", result, " ", votes, " target: ", ((len(_state.serverConfiguration)*2)+1)/3)
+	log.Debug("Find quorum: ", result, " ", votes, " target: ", _state.getQuorum())
 	return result
 }
 
