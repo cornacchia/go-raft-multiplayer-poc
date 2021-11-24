@@ -7,6 +7,8 @@ This repository holds an implementation of the [Raft consensus algorithm](https:
 * **go_skeletons**: The game shown in the figure above, basically a [2.5D engine](https://en.wikipedia.org/wiki/2.5D) with little graphics on top (skeleton sprites were made by Jacopo F. for our game [42 vs. Evil](https://cornacchia.itch.io/42-vs-evil), the main logic of the game engine is based on great tutorials by [OneLoneCoder](https://github.com/OneLoneCoder), specifically [this](https://github.com/OneLoneCoder/CommandLineFPS/blob/master/CommandLineFPS.cpp) and [this](https://github.com/OneLoneCoder/videos/blob/master/OneLoneCoder_ComandLineFPS_2.cpp)). This "game" was created to test fast-paced real time games.
 * **go_wanderer**: A grid based game in which a player simply walk around their red square. Fully turn-based (i.e. every player must make a move before a new one becomes available) and, indeed, created only to test this scenario.
 
+For more information about the project please check out [this article](https://onlinelibrary.wiley.com/doi/full/10.1002/spe.3048).
+
 ## Usage
 
 This code was built and tested with go version `go1.16 linux/amd64` (on Arch linux) and with `go1.15.8 linux/amd64` (on Ubuntu 18.04.5 LTS).
